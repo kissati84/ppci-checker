@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPCI Kéziratellenőrző</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root{
+  --ink:#101418; --paper:#fbfaf7; --rule:#d8d3c8;
+  --slate:#2f4858; --steel:#5b7a8c; --ok:#2d6a4f;
+  --warn:#9c6f19; --err:#9b2226; --muted:#6f6a60;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);
+  font:15px/1.55 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  padding:32px 20px 80px}
+.wrap{max-width:960px;margin:0 auto}
+header{border-bottom:3px double var(--slate);padding-bottom:14px;margin-bottom:26px}
+.eyebrow{font:600 11px/1 ui-monospace,"SF Mono",Menlo,monospace;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--steel);margin-bottom:8px}
+h1{font-size:29px;font-weight:600;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:14px;margin-top:5px}
+
+.drop{border:2px dashed var(--rule);border-radius:3px;padding:44px 24px;text-align:center;
+  background:#fff;transition:.15s;cursor:pointer;display:block}
+.drop:hover,.drop.on{border-color:var(--slate);background:#f4f6f7}
+.drop:focus-visible{outline:2px solid var(--slate);outline-offset:2px}
+.drop.loaded{border-style:solid;border-color:var(--ok);background:#f3f8f5}
+.drop strong{display:block;font-size:17px;font-weight:600;margin-bottom:6px;line-height:1.4}
+.drop span{display:block;color:var(--muted);font-size:13px;line-height:1.5}
+#file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+
+.bar{display:flex;gap:10px;margin:20px 0 0;flex-wrap:wrap}
+button{font:600 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.04em;
+  padding:11px 18px;border:1px solid var(--slate);border-radius:2px;
+  background:var(--slate);color:#fff;cursor:pointer}
+button.ghost{background:#fff;color:var(--slate)}
+button:disabled{opacity:.35;cursor:not-allowed}
+
+.scorecard{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);margin:26px 0}
+.cell{background:#fff;padding:14px 16px}
+.cell .k{font:600 10px/1 ui-monospace,Menlo,monospace;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted)}
+.cell .v{font-size:23px;font-weight:600;margin-top:6px}
+.v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.err{color:var(--err)}
+
+h2{font-size:13px;font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--steel);margin:30px 0 12px;
+  border-bottom:1px solid var(--rule);padding-bottom:7px}
+.item{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:11px 0;
+  border-bottom:1px solid #eceae4;align-items:start}
+.dot{width:9px;height:9px;border-radius:50%;margin-top:7px}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)}
+.dot.err{background:var(--err)} .dot.info{background:var(--steel)}
+.item .t{font-weight:600;font-size:14px}
+.item .d{color:var(--muted);font-size:13px;margin-top:3px}
+.item code{font:12px ui-monospace,Menlo,monospace;background:#f0eee8;padding:1px 5px;border-radius:2px}
+.hidden{display:none}
+.note{background:#fdf8ec;border-left:3px solid var(--warn);padding:11px 14px;
+  font-size:13px;margin:14px 0;color:#5c4a1f}
+.crcard{border:1px solid var(--rule);background:#fff;margin:12px 0}
+.crhead{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  padding:10px 12px;background:#f4f6f7;border-bottom:1px solid var(--rule);flex-wrap:wrap}
+.crhead label{font:600 13px/1 inherit;cursor:pointer;display:flex;align-items:center;gap:8px}
+.crhead input{width:15px;height:15px;cursor:pointer}
+.crhead a{font:12px ui-monospace,Menlo,monospace;color:var(--steel)}
+.crcard .reorder{border:0}
+.crprop{padding:10px 12px;border-top:1px solid #eceae4}
+.crprop .k{font:600 10px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.prop{font-size:13px;line-height:1.5;background:#f7f9f9;padding:9px 11px;border-radius:2px}
+.prop.dim{opacity:.6;text-decoration:line-through;text-decoration-color:#c99}
+.crcard.danger{border-color:var(--err)}
+.crcard.danger .crhead{background:#fbf0f0;border-bottom-color:#e5c4c4}
+.warnlbl{font:600 12px/1.3 inherit;color:var(--err)}
+.danger-note{padding:11px 13px;font-size:13px;line-height:1.55;background:#fdf5f5;
+  border-bottom:1px solid #eceae4;color:#6b2226}
+.log{font:12px/1.7 ui-monospace,Menlo,monospace;background:#fff;border:1px solid var(--rule);
+  padding:14px;max-height:220px;overflow:auto;white-space:pre-wrap;color:var(--muted)}
+.reorder{background:#fff;border:1px solid var(--rule);padding:0;margin-top:10px;
+  font:12px/1.6 ui-monospace,Menlo,monospace;width:100%;border-collapse:collapse}
+.reorder th,.reorder td{padding:7px 10px;border-bottom:1px solid #eceae4;text-align:left}
+.reorder th{background:#f4f6f7;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--steel)}
+.arrow{color:var(--steel)}
+.chg{color:var(--err);font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">Periodica Polytechnica Civil Engineering</div>
+  <h1>Kéziratellenőrző és formázó</h1>
+  <div class="sub">Author Guidelines + Sample File szerinti ellenőrzés, hivatkozás-újraszámozás, MathType-vizsgálat</div>
+</header>
+
+<div class="drop" id="drop" role="button" tabindex="0">
+  <strong id="dropTitle">Húzza ide a kéziratot, vagy kattintson</strong>
+  <span id="dropSub">.docx fájl — a feldolgozás a böngészőben történik, semmi nem töltődik fel szerverre</span>
+</div>
+<input type="file" id="file" accept=".docx">
+
+<div class="bar">
+  <button id="run" disabled>Ellenőrzés futtatása</button>
+  <button id="cr" class="ghost" disabled>Crossref-ellenőrzés</button>
+  <button id="dl" class="ghost" disabled>Korrektúrázott .docx letöltése</button>
+  <button id="rep" class="ghost" disabled>Jelentés letöltése</button>
+</div>
+
+<div id="out" class="hidden"></div>
+<div id="crout" class="hidden"></div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+let ZIPFILE=null, RESULT=null, FIXED=null, FNAME='';
+
+/* ---------- fájlkezelés ---------- */
+const drop=$('#drop');
+drop.addEventListener('click',()=>$('#file').click());
+drop.addEventListener('keydown',ev=>{
+  if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); $('#file').click(); }
+});
+['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('on')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('on')}));
+drop.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0]; if(f) load(f)});
+$('#file').addEventListener('change',ev=>{const f=ev.target.files[0]; if(f) load(f)});
+
+function load(f){
+  if(!f.name.toLowerCase().endsWith('.docx')){
+    drop.classList.remove('loaded');
+    $('#dropTitle').textContent='Ez nem .docx fájl';
+    $('#dropSub').textContent='Válasszon Word .docx kéziratot — a .doc és .pdf nem dolgozható fel.';
+    return;
+  }
+  FNAME=f.name.replace(/\.docx$/i,'');
+  drop.classList.add('loaded');
+  $('#dropTitle').textContent=f.name;
+  $('#dropSub').textContent=(f.size/1048576).toFixed(2)+' MB — készen áll az ellenőrzésre';
+  ZIPFILE=f; $('#run').disabled=false; $('#dl').disabled=true; $('#rep').disabled=true;
+}
+
+/* ---------- XML segédek ---------- */
+const NS='xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+function paraText(p){
+  return Array.from(p.getElementsByTagName('w:t')).map(t=>t.textContent).join('');
+}
+
+/* ---------- fő motor ---------- */
+$('#run').addEventListener('click',async()=>{
+  $('#run').disabled=true; $('#run').textContent='Feldolgozás…';
+  try{
+    const zip=await JSZip.loadAsync(ZIPFILE);
+    const xml=await zip.file('word/document.xml').async('string');
+    const doc=new DOMParser().parseFromString(xml,'application/xml');
+    RESULT=analyze(doc,zip,xml);
+    FIXED={zip,doc};
+    render(RESULT);
+    $('#dl').disabled=false; $('#rep').disabled=false; $('#cr').disabled=false;
+  }catch(e){
+    $('#out').classList.remove('hidden');
+    $('#out').innerHTML='<h2>Hiba</h2><div class="item"><div class="dot err"></div><div><div class="t">A fájl nem dolgozható fel</div><div class="d">'+e.message+'</div></div></div>';
+  }
+  $('#run').disabled=false; $('#run').textContent='Ellenőrzés futtatása';
+});
+
+function analyze(doc,zip,xml){
+  const paras=Array.from(doc.getElementsByTagName('w:p'));
+  const texts=paras.map(paraText);
+  const body=texts.join('\n');
+  const R={checks:[],refs:{},math:{},log:[]};
+
+  /* --- 1. Hivatkozások a szövegben --- */
+  // A References szakasz kezdete
+  let refStart=texts.findIndex(t=>/^\s*references\s*$/i.test(t));
+  const textOnly=refStart>-1?texts.slice(0,refStart).join('\n'):body;
+
+  // [1], [1, 2], [3–5] alakú hivatkozások, sorrendben
+  const order=[];
+  const re=/\[([\d\s,–\-−]+)\]/g; let m;
+  while((m=re.exec(textOnly))){
+    const inner=m[1];
+    if(!/\d/.test(inner)) continue;
+    inner.split(',').forEach(part=>{
+      part=part.trim();
+      const range=part.match(/^(\d+)\s*[–\-−]\s*(\d+)$/);
+      if(range){
+        for(let i=+range[1];i<=+range[2];i++) if(!order.includes(i)) order.push(i);
+      }else if(/^\d+$/.test(part)){
+        const n=+part; if(!order.includes(n)) order.push(n);
+      }
+    });
+  }
+
+  /* --- 2. Hivatkozáslista kinyerése --- */
+  const refItems=[];
+  let autoNum=false;
+  if(refStart>-1){
+    let cur=null;
+    for(let i=refStart+1;i<texts.length;i++){
+      const t=texts[i].trim();
+      if(!t) continue;
+      if(/^(appendix|acknowledgement|acknowledgment|nomenclature)\b/i.test(t)) break;
+      // Word automatikus számozás: a sorszám nincs a szövegben, numPr jelzi
+      const hasNumPr=paras[i].getElementsByTagName('w:numPr').length>0;
+      const num=t.match(/^\[?(\d{1,3})[\.\]\)]\s+(.+)$/);
+      if(hasNumPr){
+        autoNum=true;
+        cur={n:refItems.length+1,text:t,idx:i,auto:true}; refItems.push(cur);
+      } else if(num){
+        cur={n:+num[1],text:num[2],idx:i,auto:false}; refItems.push(cur);
+      } else if(cur){ cur.text+=' '+t; }
+      else { cur={n:refItems.length+1,text:t,idx:i,auto:false}; refItems.push(cur); }
+    }
+  }
+  R.refs.autoNum=autoNum;
+  R.refs.listCount=refItems.length;
+  R.refs.citedCount=order.length;
+  R.refs.order=order;
+  R.refs.items=refItems;
+
+  // Sorrendhelyesség: az első előfordulások 1,2,3… kell legyenek
+  const inOrder=order.every((n,i)=>n===i+1);
+  R.refs.inOrder=inOrder;
+
+  // Új számozás leképezése
+  const map=new Map(); order.forEach((old,i)=>map.set(old,i+1));
+  // A nem hivatkozott tételek a végére kerülnek
+  const orphans=refItems.map(r=>r.n).filter(n=>!map.has(n));
+  orphans.forEach(n=>map.set(n,map.size+1));
+  R.refs.map=map;
+  R.refs.orphans=orphans;
+  R.refs.missing=order.filter(n=>!refItems.some(r=>r.n===n));
+
+  R.checks.push(inOrder
+    ? {s:'ok',t:'A hivatkozások megjelenési sorrendben vannak',d:`${order.length} hivatkozás, első előfordulásuk 1…${order.length}.`}
+    : {s:'err',t:'A hivatkozások NINCSENEK megjelenési sorrendben',d:`Az első előfordulások sorrendje: [${order.slice(0,14).join(', ')}${order.length>14?', …':''}]. Az alkalmazás átszámozza a szöveget és a listát is.`});
+
+  R.checks.push(R.refs.missing.length===0
+    ? {s:'ok',t:'Minden szövegbeli hivatkozás szerepel a listában',d:'Nincs lógó hivatkozás.'}
+    : {s:'err',t:'Hiányzó listatételek',d:'A szövegben hivatkozott, de a listából hiányzó számok: '+R.refs.missing.join(', ')});
+
+  if(autoNum) R.checks.push({s:'warn',t:'A hivatkozáslista Word automatikus számozást használ',
+    d:'A sorszámok nem a szövegben vannak, hanem listaformázásból jönnek. Átrendezéskor a Word magától újraszámoz — de a tördelőnek gyakran fix, beírt sorszám kell. Javasolt a listát sima szöveggé alakítani (Kezdőlap → Számozás ki, majd a számok beírása).'});
+
+  R.checks.push(orphans.length===0
+    ? {s:'ok',t:'Minden listatételre hivatkozik a szöveg',d:'Nincs nem hivatkozott tétel.'}
+    : {s:'warn',t:'Nem hivatkozott listatételek',d:'A listában szerepel, de a szöveg nem hivatkozza: '+orphans.join(', ')+'. A Guidelines szerint minden tételt hivatkozni kell.'});
+
+  /* --- 3. Hivatkozásformátum (PP_SAMPLE_REFERENCE_LIST szerint) --- */
+  const fmt=[];
+  refItems.forEach(r=>{
+    const t=r.text;
+    const iss=[];
+    // A szerzőlista az első idézőjeles cím ELŐTTI rész. A tétel többi
+    // részében az "and" legális (pl. "Tunnelling and Underground Space
+    // Technology"), ezért csak ezt a szegmenst vizsgáljuk.
+    const qm=t.match(/[""„"']/);
+    const authorSeg=qm?t.slice(0,t.indexOf(qm[0])):t;
+
+    if(/\bet al\b/i.test(authorSeg)) iss.push('„et al." használata tilos — minden szerzőt ki kell írni');
+    if(/\band\b/i.test(authorSeg)) iss.push('„and" a szerzők között — csak vessző használható');
+    if(!qm) iss.push('hiányzik az idézőjeles cím');
+    const isJournal=/,\s*\d+\(\d+\)|,\s*\d+,\s*pp\./.test(t);
+    const hasDOI=/doi\.org\/|\b10\.\d{4,9}\//i.test(t);
+    const hasISBN=/ISBN/i.test(t);
+    const online=/\[online\]|Available at:/i.test(t);
+    if(isJournal && !hasDOI && !online) iss.push('hiányzik a DOI (vagy [online] Available at: URL)');
+    if(/\bin press\b/i.test(t) && !/Accepted for publication/i.test(t))
+      iss.push('„in press" tételnél kötelező: (Accepted for publication [Month Year])');
+    if(/\bPress\b/.test(t) && !isJournal && !hasISBN && !hasDOI && !online)
+      iss.push('könyvnél hiányzik az ISBN');
+    // Rövidített folyóiratnév: csak a cím UTÁNI részben nézzük, és csak
+    // valódi rövidítés-mintákra (pont után szóköz + nagybetű).
+    const tailSeg=qm?t.slice(t.lastIndexOf('"')+1):'';
+    if(/\b(Trans|Proc|Int|J|Eng|Geotech|Struct|Mech)\.\s/.test(tailSeg))
+      iss.push('rövidített folyóirat-/konferencianév — ki kell írni teljesen');
+    if(iss.length) fmt.push({n:r.n,iss,snip:t.slice(0,90)});
+  });
+  R.refs.fmt=fmt;
+  R.checks.push(fmt.length===0
+    ? {s:'ok',t:'A hivatkozásformátum megfelel a mintalistának',d:`${refItems.length} tétel ellenőrizve.`}
+    : {s:'warn',t:`${fmt.length} tétel formátuma eltér a mintalistától`,d:'Részletek lent — ezeket kézzel kell javítani, az alkalmazás nem talál ki hiányzó adatot.'});
+
+  /* --- 4. MathType / egyenletek --- */
+  const ole=(xml.match(/ProgID="Equation\.DSMT4"/g)||[]).length; // MathType 6+
+  const ole3=(xml.match(/ProgID="Equation\.3"/g)||[]).length;    // régi MS Equation 3.0
+  const omml=(xml.match(/<m:oMath[ >]/g)||[]).length;            // natív Word egyenlet
+  R.math={ole,ole3,omml};
+  // Képként beszúrt egyenlet gyanúja: egyenletszámozás sor kép mellett
+  const eqNums=(body.match(/\((\d{1,2})\)\s*$/gm)||[]).length;
+  R.math.eqNums=eqNums;
+
+  if(ole>0) R.checks.push({s:'ok',t:`${ole} egyenlet MathType (Equation.DSMT4) objektumként`,d:'Megfelel a Guidelines követelményének. Az alkalmazás érintetlenül hagyja — az újracsomagolás nem bontja meg az OLE-t.'});
+  if(ole3>0) R.checks.push({s:'warn',t:`${ole3} egyenlet régi MS Equation 3.0 objektum`,d:'Ez nem MathType. MathType-ban meg kell nyitni és DSMT4-ként visszamenteni (MathType → Convert Equations).'});
+  if(omml>0) R.checks.push({s:'warn',t:`${omml} natív Word-egyenlet (OMML)`,d:'A Guidelines MathType-ot vagy Equation Editort ír elő. Konverzió: MathType fül → Convert Equations → „Word 2007+" forrás → „MathType equations" cél. Ezt a Word/MathType végzi, böngészőben nem elvégezhető.'});
+  if(ole+ole3+omml===0) R.checks.push({s:'err',t:'Nem található szerkeszthető egyenlet',d:'Ha a képletek képként (JPG/PNG/EMF) vannak beszúrva, azt a Guidelines kifejezetten tiltja: „never insert an equation as an image or a text".'});
+
+  // Eq. hivatkozási stílus
+  const badEq=[];
+  if(/\bequation\s*\(\d/gi.test(textOnly.replace(/^Equation \(\d/gm,'')))
+    badEq.push('„equation (1)" alak — helyesen: Eq. (1); mondat elején: Equation (1)');
+  if(/(?<![\w.])\bEquation\b\s*\(\d/g.test(textOnly)) {} // mondat eleji, rendben
+  if(badEq.length) R.checks.push({s:'warn',t:'Egyenlet-hivatkozási stílus',d:badEq.join(' · ')});
+  else R.checks.push({s:'ok',t:'Egyenlet-hivatkozások stílusa rendben',d:'„Eq. (n)" alak.'});
+
+  /* --- 5. Ábra- és táblázathivatkozások --- */
+  const figRefBad=(textOnly.match(/\bFigure\s+\d/g)||[]).length;
+  R.checks.push(figRefBad===0
+    ? {s:'ok',t:'Ábrahivatkozások „Fig." alakban',d:'Megfelel a Guidelines-nak.'}
+    : {s:'err',t:`${figRefBad} db „Figure n" hivatkozás`,d:'A Guidelines szerint mindig „Fig." rövidítés kell, mondat elején is. Az alkalmazás automatikusan javítja.'});
+
+  const vague=(textOnly.match(/\bthe table (above|below)|\bthe figure (above|below)/gi)||[]).length;
+  R.checks.push(vague===0
+    ? {s:'ok',t:'Nincs „table above/below" típusú hivatkozás',d:'Minden hivatkozás számozott.'}
+    : {s:'err',t:`${vague} db helymeghatározó hivatkozás`,d:'Tilos: „the table above/below". Helyette: „Table 1". Kézi javítást igényel.'});
+
+  const refBrack=(textOnly.match(/\bRef\.\s*\[\d|reference\s*\[\d/gi)||[]).length;
+  R.checks.push(refBrack===0
+    ? {s:'ok',t:'Hivatkozási stílus rendben',d:'Nincs „Ref. [3]" / „reference [3]" alak.'}
+    : {s:'err',t:`${refBrack} db „Ref. [n]" alak`,d:'A Guidelines tiltja. Helyette csak [3], mondat elején szerzőnév: „Smith and Smith [3] show…". Az alkalmazás javítja.'});
+
+  /* --- 6. Absztrakt, kulcsszavak --- */
+  const ai=texts.findIndex(t=>/^\s*abstract\s*$/i.test(t));
+  const ki=texts.findIndex(t=>/^\s*keywords?\s*$/i.test(t));
+  if(ai>-1){
+    const abs=texts.slice(ai+1,ki>-1?ki:ai+4).join(' ').trim();
+    const w=abs.split(/\s+/).filter(Boolean).length;
+    R.checks.push(w<=250
+      ? {s:'ok',t:`Absztrakt: ${w} szó`,d:'A 250 szavas korlát alatt.'}
+      : {s:'err',t:`Absztrakt: ${w} szó`,d:'Túllépi a 250 szavas korlátot — rövidíteni kell.'});
+    R.checks.push(/\[\d+\]/.test(abs)
+      ? {s:'err',t:'Az absztrakt hivatkozást tartalmaz',d:'A Guidelines szerint az absztrakt nem tartalmazhat citációt.'}
+      : {s:'ok',t:'Az absztrakt nem tartalmaz hivatkozást',d:'Megfelel.'});
+  }
+  if(ki>-1){
+    const kw=texts[ki+1]||'';
+    const parts=kw.split(/[;,]/).map(s=>s.trim()).filter(Boolean);
+    const bad=parts.filter(p=>/^[A-Z]/.test(p) && !/^[A-Z]{2,}/.test(p));
+    R.checks.push(parts.length>=3&&parts.length<=5
+      ? {s:'ok',t:`Kulcsszavak: ${parts.length} db`,d:'A 3–5 közötti tartományban.'}
+      : {s:'err',t:`Kulcsszavak: ${parts.length} db`,d:'3–5 kulcsszó kötelező.'});
+    R.checks.push(/;/.test(kw)
+      ? {s:'err',t:'A kulcsszavak pontosvesszővel vannak elválasztva',d:'A Guidelines vesszőt ír elő. Az alkalmazás javítja.'}
+      : {s:'ok',t:'A kulcsszavak vesszővel elválasztva',d:'Megfelel.'});
+    R.checks.push(bad.length>0
+      ? {s:'warn',t:'Nagybetűvel kezdődő kulcsszavak',d:'„'+bad.join('", "')+'" — kisbetűvel kell kezdeni. Az alkalmazás javítja.'}
+      : {s:'ok',t:'A kulcsszavak kisbetűvel kezdődnek',d:'Megfelel.'});
+  }
+
+  /* --- 7. Szakaszcímek --- */
+  const secs=texts.filter(t=>/^\s*\d+(\.\d+){0,2}\.?\s*\S/.test(t) && t.length<90);
+  const chap=(textOnly.match(/\b(Chapter|Part)\s+\d/g)||[]).length;
+  R.checks.push(chap===0
+    ? {s:'ok',t:'Szakaszokra „Section" néven hivatkozik',d:'Nincs „Chapter"/„Part".'}
+    : {s:'err',t:`${chap} db „Chapter"/„Part" hivatkozás`,d:'Helyette „Section n" használandó. Az alkalmazás javítja.'});
+  const deep=texts.filter(t=>/^\s*\d+\.\d+\.\d+\.\d+/.test(t));
+  R.checks.push(deep.length===0
+    ? {s:'ok',t:'Legfeljebb három címszint',d:'Megfelel a hierarchiakorlátnak.'}
+    : {s:'err',t:'Négy vagy több címszint',d:deep.length+' cím túllépi a három szintet — a negyedik szinttől dőlt, szám nélküli cím kell.'});
+
+  /* --- 8. Kereszthivatkozások --- */
+  const xref=(xml.match(/instrText[^<]*REF /g)||[]).length;
+  R.checks.push(xref===0
+    ? {s:'ok',t:'Nincs Word-kereszthivatkozás',d:'A Guidelines tiltja a cross-reference mezőket.'}
+    : {s:'err',t:`${xref} db Word-kereszthivatkozás`,d:'„Do not create Cross-references in your Word file." Az alkalmazás sima szöveggé alakítja.'});
+
+  /* --- 9. Amerikai helyesírás --- */
+  // Csak a szövegtörzsben nézzük: a hivatkozáslistában a mű eredeti címe idézet.
+  // Az "analyses" kimarad — az az "analysis" többes száma, amerikaiul is helyes.
+  const brit=[['behaviour','behavior'],['modelling','modeling'],['modelled','modeled'],
+    ['analysed','analyzed'],['analysing','analyzing'],['centre','center'],['colour','color'],
+    ['optimisation','optimization'],['optimise','optimize'],['utilisation','utilization'],
+    ['organisation','organization'],['labelled','labeled'],['fibre','fiber']];
+  const found=brit.filter(([b])=>new RegExp('\\b'+b+'\\b','i').test(textOnly));
+  R.checks.push(found.length===0
+    ? {s:'ok',t:'Amerikai helyesírás',d:'Nem található brit alak.'}
+    : {s:'warn',t:`${found.length} brit helyesírású alak`,d:found.map(([b,a])=>b+' → '+a).join(' · ')+'. Az alkalmazás javítja.'});
+
+  /* --- 10. Ábrák, médiafájlok --- */
+  const media=Object.keys(zip.files).filter(f=>/^word\/media\//.test(f));
+  const raster=media.filter(f=>/\.(png|jpe?g|tiff?)$/i.test(f));
+  const vector=media.filter(f=>/\.(emf|wmf|eps|pdf)$/i.test(f));
+  R.media={total:media.length,raster:raster.length,vector:vector.length,
+    names:media.map(f=>f.split('/').pop())};
+  R.checks.push({s:'info',t:`${media.length} beágyazott kép (${raster.length} raszter, ${vector.length} vektor)`,
+    d:'Elfogadáskor mindegyiket külön fájlként is fel kell tölteni „Fig01.jpg" névvel, min. 300 dpi. Oszlopszélesség max. 83,5 mm, kéthasábos max. 174 mm.'});
+
+  const figCaps=texts.filter(t=>/^Fig\.?\s*\d+\s/i.test(t.trim())).length;
+  const tabCaps=texts.filter(t=>/^Table\s*\d+\s/i.test(t.trim())).length;
+  R.figs={figCaps,tabCaps};
+  const tbls=(xml.match(/<w:tbl>/g)||[]).length;
+  R.checks.push({s:'info',t:`${figCaps} ábrafelirat, ${tabCaps} táblázatfelirat, ${tbls} valódi táblázat`,
+    d:'A táblázatok nem lehetnek képek — a táblázatfeliratok száma és a valódi Word-táblázatok száma közti eltérés képként beszúrt táblázatra utalhat.'});
+
+  /* --- 11. Terjedelem --- */
+  const words=body.split(/\s+/).filter(Boolean).length;
+  const est=Math.round(words/650*10)/10;
+  R.checks.push(est<=10
+    ? {s:'ok',t:`Terjedelem: kb. ${est} oldal (${words} szó)`,d:'Kutatási cikk: 8–10 oldal.'}
+    : est<=14
+    ? {s:'warn',t:`Terjedelem: kb. ${est} oldal (${words} szó)`,d:'Kutatási cikkre 8–10 oldal a korlát; 14 oldal csak áttekintő cikknél. Becslés, a végleges tördelés dönt.'}
+    : {s:'err',t:`Terjedelem: kb. ${est} oldal (${words} szó)`,d:'Túllépi a 14 oldalas felső korlátot is.'});
+  R.checks.push(refItems.length<=50
+    ? {s:'ok',t:`Hivatkozásszám: ${refItems.length}`,d:'Kutatási cikknél max. 50.'}
+    : {s:'warn',t:`Hivatkozásszám: ${refItems.length}`,d:'Kutatási cikknél max. 50; e fölött áttekintő cikként kell benyújtani (100+ hivatkozással).'});
+
+  /* --- 12. Aláhúzás --- */
+  const uline=(xml.match(/<w:u w:val="single"/g)||[]).length;
+  R.checks.push(uline===0
+    ? {s:'ok',t:'Nincs aláhúzott kiemelés',d:'A Guidelines dőlt betűt ír elő aláhúzás helyett.'}
+    : {s:'warn',t:`${uline} aláhúzott szövegrész`,d:'Kiemelésre dőlt betűt kell használni. (Hiperlinkeknél normális.)'});
+
+  R.score={
+    err:R.checks.filter(c=>c.s==='err').length,
+    warn:R.checks.filter(c=>c.s==='warn').length,
+    ok:R.checks.filter(c=>c.s==='ok').length
+  };
+  return R;
+}
+
+/* ---------- Crossref-ellenőrzés ----------
+   mailto NÉLKÜL: a kérések a Crossref "public pool"-jába mennek.
+   Ez ingyenes és nyilvános, de a teljesítménye ingadozik, ezért
+   sorosan, késleltetéssel kérdezünk, és 429-nél visszalépünk.
+   FONTOS: a talált adat JAVASLAT. Rossz DOI esetén a Crossref egy
+   létező, de MÁS cikket ad vissza — ezért csak a szerkesztő
+   jóváhagyásával kerül a korrektúrába. */
+const CR_DELAY=350;      // ms két kérés között
+let CROSSREF=null;       // n -> {status, data, diff}
+
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+function extractDOI(t){
+  const m=t.match(/\b10\.\d{4,9}\/[^\s"'<>,;)\]]+/);
+  return m?m[0].replace(/[.,;]+$/,''):null;
+}
+// "Family, C. D." formátumú szerzőlista a Crossref adatból
+function crAuthors(a){
+  if(!a) return '';
+  return a.map(x=>{
+    const fam=x.family||x.name||'';
+    const giv=(x.given||'').split(/[\s.]+/).filter(Boolean)
+      .map(s=>s[0].toUpperCase()+'.').join(' ');
+    return giv?`${fam}, ${giv}`:fam;
+  }).join(', ');
+}
+function norm(s){return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
+
+async function crossrefLookup(doi){
+  // A DOI-t kódolni kell, DE a perjel útvonal-elválasztó a /works/<prefix>/<suffix>
+  // útvonalban — encodeURIComponent azt %2F-re írná. Szegmensenként kódolunk.
+  const safe=doi.split('/').map(encodeURIComponent).join('/');
+  const url='https://api.crossref.org/works/'+safe;
+  // NINCS egyedi fejléc! Az 'Accept' fejléc a kérést "nem-egyszerűvé" tenné,
+  // amitől a böngésző CORS-előellenőrzést (preflight OPTIONS) küld. Az file://
+  // alól elbukik, és a hibás választ könnyű tévesen 404-nek olvasni.
+  // A Crossref JSON-t ad alapból, a fejléc felesleges.
+  let r;
+  try{
+    r=await fetch(url);
+  }catch(e){
+    // Hálózati/CORS hiba — NEM azt jelenti, hogy a DOI nem létezik.
+    return {status:'neterr',msg:e.message};
+  }
+  if(r.type==='opaque') return {status:'neterr',msg:'opaque response (CORS)'};
+  if(r.status===404) return {status:'notfound'};
+  if(r.status===429) return {status:'ratelimit'};
+  if(!r.ok) return {status:'error',code:r.status};
+  let j;
+  try{ j=await r.json(); }
+  catch(e){ return {status:'error',code:'parse'}; }
+  const m=j&&j.message;
+  if(!m) return {status:'error',code:'nomsg'};
+  return {status:'ok',data:{
+    title:(m.title&&m.title[0])||'',
+    authors:crAuthors(m.author),
+    journal:(m['container-title']&&m['container-title'][0])||'',
+    volume:m.volume||'', issue:m.issue||'', page:m.page||'',
+    year:(((m.issued||{})['date-parts']||[[]])[0]||[])[0]||'',
+    type:m.type||''
+  }};
+}
+
+// A kéziratbeli tétel és a Crossref-adat összevetése
+function compareRef(text,cr){
+  const d=[];
+  const t=norm(text);
+  // A cím eltérése a legsúlyosabb jel: azt jelenti, hogy a DOI EGY MÁSIK
+  // cikkre mutat. Ilyenkor nem a cím a hibás, hanem a DOI.
+  let wrongDoi=false;
+  if(cr.title && !t.includes(norm(cr.title).slice(0,40))){
+    wrongDoi=true;
+    d.push({f:'Cím',ms:'(a kéziratban más cím szerepel)',cr:cr.title});
+  }
+  if(cr.year && !new RegExp('\\b'+cr.year+'\\b').test(text))
+    d.push({f:'Év',ms:(text.match(/\b(19|20)\d{2}\b/g)||['—']).join('/'),cr:String(cr.year)});
+  if(cr.journal && !t.includes(norm(cr.journal).slice(0,25)))
+    d.push({f:'Folyóirat',ms:'(eltér vagy rövidítve)',cr:cr.journal});
+  if(cr.volume){
+    const vm=text.match(/,\s*(\d+)\s*\(/);
+    if(vm && vm[1]!==String(cr.volume)) d.push({f:'Évfolyam',ms:vm[1],cr:String(cr.volume)});
+  }
+  if(cr.page && /pp\./.test(text)){
+    const pm=text.match(/pp\.\s*([\d]+)\s*[–\-−]\s*([\d]+)/);
+    const crp=cr.page.replace(/\s/g,'').split(/[–\-]/);
+    if(pm && crp.length===2 && (pm[1]!==crp[0]||pm[2]!==crp[1]))
+      d.push({f:'Oldalszám',ms:pm[1]+'–'+pm[2],cr:crp.join('–')});
+  }
+  d.wrongDoi=wrongDoi;
+  return d;
+}
+
+async function runCrossref(){
+  const btn=$('#cr');
+  const items=RESULT.refs.items;
+  CROSSREF={};
+  let done=0, halted=false;
+
+  for(const it of items){
+    const doi=extractDOI(it.text);
+    if(!doi){ CROSSREF[it.n]={status:'nodoi'}; continue; }
+    btn.textContent=`Lekérdezés… ${++done}/${items.length}`;
+    let r;
+    try{ r=await crossrefLookup(doi); }
+    catch(e){ r={status:'neterr',msg:e.message}; }
+
+    if(r.status==='neterr'){
+      // Hálózati/CORS hiba: NEM állítjuk, hogy a DOI hibás. Leállunk,
+      // különben minden további tétel hamis "nem található" jelzést kapna.
+      CROSSREF[it.n]={...r,doi};
+      halted=true;
+      break;
+    }
+    if(r.status==='ratelimit'){
+      await sleep(2500);
+      let r2; try{ r2=await crossrefLookup(doi); }catch(e){ r2={status:'neterr'}; }
+      if(r2.status==='neterr'){ CROSSREF[it.n]={...r2,doi}; halted=true; break; }
+      CROSSREF[it.n]=r2.status==='ok'
+        ? {status:'ok',doi,data:r2.data,diff:compareRef(it.text,r2.data)} : {...r2,doi};
+    } else if(r.status==='ok'){
+      CROSSREF[it.n]={status:'ok',doi,data:r.data,diff:compareRef(it.text,r.data)};
+    } else CROSSREF[it.n]={...r,doi};
+    await sleep(CR_DELAY);
+  }
+  btn.textContent='Crossref-ellenőrzés';
+  renderCrossref(halted);
+}
+
+function renderCrossref(halted){
+  const box=$('#crout');
+  const ent=Object.entries(CROSSREF);
+  let h='<h2>Crossref-ellenőrzés</h2>';
+
+  if(halted){
+    const isFile=location.protocol==='file:';
+    h+='<div class="item"><div class="dot err"></div><div><div class="t">A lekérdezés megszakadt — nem sikerült elérni a Crossref-et</div>'
+     +'<div class="d">'
+     +(isFile
+       ? 'Az oldal <code>file://</code> címről nyílt meg, ezért a böngésző letiltja a külső lekérdezést. Töltse fel egy <code>https://</code> címre (GitHub Pages vagy belső webszerver), és ott működni fog.'
+       : 'Hálózati hiba vagy a Crossref átmeneti elérhetetlensége. Próbálja újra néhány perc múlva.')
+     +' <strong>Amit eddig lekérdezett, azt lent látja; a többi tétel nem lett ellenőrizve.</strong>'
+     +' Fontos: ez nem jelenti azt, hogy a DOI-k hibásak.</div></div></div>';
+    box.innerHTML=h; box.classList.remove('hidden');
+    box.scrollIntoView({behavior:'smooth'});
+    return;
+  }
+
+  const okAll=ent.filter(([,v])=>v.status==='ok'&&!v.diff.length).length;
+  const diffs=ent.filter(([,v])=>v.status==='ok'&&v.diff.length);
+  const wrongs=diffs.filter(([,v])=>v.diff.wrongDoi);
+  const minor=diffs.filter(([,v])=>!v.diff.wrongDoi);
+  const nf=ent.filter(([,v])=>v.status==='notfound');
+  const nod=ent.filter(([,v])=>v.status==='nodoi');
+
+  h+='<div class="scorecard">'
+   +cell('Egyezik',okAll,'ok')
+   +cell('Rossz DOI',wrongs.length,wrongs.length?'err':'ok')
+   +cell('Adateltérés',minor.length,minor.length?'warn':'ok')
+   +cell('Nem található',nf.length,nf.length?'warn':'ok')
+   +cell('Nincs DOI',nod.length,'')
+   +'</div>';
+
+  if(wrongs.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${wrongs.length} tétel DOI-ja másik közleményre mutat</div><div class="d">Tétel: ${wrongs.map(([n])=>'['+n+']').join(', ')} — a megadott DOI létezik, de nem ahhoz a cikkhez tartozik, amit a tétel megnevez. Ez a leggyakoribb súlyos hivatkozási hiba. A szerzőnek kell tisztáznia; automatikusan nem javítható.</div></div></div>`;
+
+  if(nf.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${nf.length} DOI nem található a Crossrefben</div><div class="d">Tétel: ${nf.map(([n])=>'['+n+']').join(', ')} — leggyakrabban elgépelt DOI. Ritkábban a DOI másik ügynökségnél (DataCite, mEDRA) van regisztrálva, vagy még nem indexelt. Nyissa meg a doi.org linket: ha az működik, a DOI jó, csak a Crossref nem ismeri.</div></div></div>`;
+  if(nod.length) h+=`<div class="item"><div class="dot info"></div><div><div class="t">${nod.length} tételnek nincs DOI-ja</div><div class="d">Tétel: ${nod.map(([n])=>'['+n+']').join(', ')} — jellemzően könyv vagy szabvány. Kézi ellenőrzés szükséges (ISBN).</div></div></div>`;
+
+  if(diffs.length){
+    h+='<div class="note">Az alábbi eltéréseket a Crossref regisztrációs adata alapján találtuk. '
+      +'<strong>Ez javaslat, nem tény:</strong> ha a DOI hibás, a Crossref egy másik cikk adatát adja vissza. '
+      +'Vesse össze a tétellel, és csak azt pipálja be, amit helyesnek ítél.</div>';
+    diffs.forEach(([n,v])=>{
+      const wrong=v.diff.wrongDoi;
+      h+=`<div class="crcard${wrong?' danger':''}"><div class="crhead">`;
+      if(wrong){
+        h+=`<span class="warnlbl">A DOI másik cikkre mutat — nem javítható automatikusan</span>`;
+      } else {
+        h+=`<label><input type="checkbox" class="crpick" data-n="${n}"> Tétel [${n}] javítása</label>`;
+      }
+      h+=`<a href="https://doi.org/${v.doi}" target="_blank" rel="noopener">${v.doi} ↗</a></div>`;
+      if(wrong){
+        h+=`<div class="danger-note"><strong>Tétel [${n}]:</strong> a kéziratban megadott DOI a Crossref szerint egy másik közleményhez tartozik.
+          Ilyenkor <strong>nem a cím a hibás, hanem a DOI</strong> — a lenti „javasolt tétel" egy idegen cikk, azt beírni súlyos hiba lenne.
+          A helyes DOI-t a szerzőnek kell megadnia. Nyissa meg a linket az ellenőrzéshez.</div>`;
+      }
+      h+='<table class="reorder"><tr><th>Mező</th><th>Kéziratban</th><th>Crossref szerint</th></tr>';
+      v.diff.forEach(d=>{h+=`<tr><td>${d.f}</td><td>${esc(d.ms)}</td><td class="chg">${esc(d.cr)}</td></tr>`});
+      h+='</table>';
+      if(!wrong){
+        h+=`<div class="crprop"><div class="k">Javasolt tétel:</div><div class="prop" data-prop="${n}">${esc(buildRef(v.data))}</div></div>`;
+      } else {
+        h+=`<div class="crprop"><div class="k">A DOI-hoz tartozó közlemény (NEM javaslat):</div><div class="prop dim">${esc(buildRef(v.data))}</div></div>`;
+      }
+      h+='</div>';
+    });
+  }
+  box.innerHTML=h; box.classList.remove('hidden');
+  box.scrollIntoView({behavior:'smooth'});
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+// PP mintalista szerinti tételszöveg a Crossref-adatból
+function buildRef(d){
+  let s=d.authors+' "'+d.title+'", '+d.journal;
+  if(d.volume){ s+=', '+d.volume+(d.issue?'('+d.issue+')':''); }
+  if(d.page) s+=', pp. '+d.page.replace(/-/g,'–');
+  if(d.year) s+=', '+d.year+'.';
+  return s;
+}
+const AUTHOR='PPCI Kéziratellenőrző';
+let RID=9000;
+const STAMP=()=>new Date().toISOString().replace(/\.\d+Z$/,'Z');
+
+// Egy <w:r> run klónja adott szöveggel; del=true esetén w:delText
+function makeRun(doc,proto,text,isDel){
+  const r=proto.cloneNode(true);
+  // minden szövegelem eltávolítása a klónból
+  Array.from(r.getElementsByTagName('w:t')).forEach(n=>n.parentNode.removeChild(n));
+  Array.from(r.getElementsByTagName('w:delText')).forEach(n=>n.parentNode.removeChild(n));
+  const t=doc.createElement(isDel?'w:delText':'w:t');
+  t.setAttribute('xml:space','preserve');
+  t.textContent=text;
+  r.appendChild(t);
+  return r;
+}
+function wrapChange(doc,tag,node){
+  const w=doc.createElement(tag); // w:ins | w:del
+  w.setAttribute('w:id',String(RID++));
+  w.setAttribute('w:author',AUTHOR);
+  w.setAttribute('w:date',STAMP());
+  w.appendChild(node);
+  return w;
+}
+
+// A run szövegét lecseréli: eredeti -> <w:del>, új -> <w:ins>
+function trackedReplaceRun(doc,run,oldText,newText){
+  const parent=run.parentNode;
+  const delR=wrapChange(doc,'w:del',makeRun(doc,run,oldText,true));
+  const insR=wrapChange(doc,'w:ins',makeRun(doc,run,newText,false));
+  parent.insertBefore(delR,run);
+  parent.insertBefore(insR,run);
+  parent.removeChild(run);
+}
+
+/* Brit -> amerikai helyesírás.
+   FONTOS: az "analyses" a magyarul "elemzések" főnév, ez amerikaiul IS helyes,
+   ezért nem szabad "analyzes"-re írni. Csak az igei alakokat cseréljük. */
+function fixSpelling(s){
+  return s
+    .replace(/\bbehaviour/g,'behavior').replace(/\bBehaviour/g,'Behavior')
+    .replace(/\bmodelling/g,'modeling').replace(/\bModelling/g,'Modeling')
+    .replace(/\bmodelled/g,'modeled').replace(/\bModelled/g,'Modeled')
+    .replace(/\banalysed/g,'analyzed').replace(/\bAnalysed/g,'Analyzed')
+    .replace(/\banalysing/g,'analyzing').replace(/\bAnalysing/g,'Analyzing')
+    // csak az ige: analyse / analyses(ige, 3.sz.) NEM érintve, mert az
+    // "analyses" főnévi többes szám is lehet -> túl kockázatos, kihagyjuk
+    .replace(/\banalyse\b/g,'analyze').replace(/\bAnalyse\b/g,'Analyze')
+    .replace(/\bcentre\b/g,'center').replace(/\bCentre\b/g,'Center')
+    .replace(/\bcolour/g,'color').replace(/\bColour/g,'Color')
+    .replace(/\boptimisation/g,'optimization').replace(/\bOptimisation/g,'Optimization')
+    .replace(/\boptimise/g,'optimize').replace(/\bOptimise/g,'Optimize')
+    .replace(/\butilisation/g,'utilization').replace(/\butilise/g,'utilize')
+    .replace(/\borganisation/g,'organization').replace(/\bOrganisation/g,'Organization')
+    .replace(/\blabelled/g,'labeled').replace(/\bfibre\b/g,'fiber')
+    .replace(/\bmetres\b/g,'meters');
+}
+
+/* Javítószabályok.
+   isRefList=true esetén a tétel SZÖVEGÉHEZ nem nyúlunk: a hivatkozott mű
+   címe idézet, az eredeti (akár brit) helyesírását meg kell őrizni. */
+function applyRules(s,map,isRefList){
+  if(isRefList) return s;
+  let out=s;
+  out=out.replace(/\[([\d\s,–\-−]+)\]/g,(full,inner)=>{
+    if(!/\d/.test(inner)) return full;
+    const parts=inner.split(',').map(p=>p.trim()).map(p=>{
+      const rg=p.match(/^(\d+)\s*[–\-−]\s*(\d+)$/);
+      if(rg){ const a=map.get(+rg[1]),b=map.get(+rg[2]); return (a&&b)?(a+'–'+b):p; }
+      const n=+p; return map.has(n)?String(map.get(n)):p;
+    });
+    return '['+parts.join(', ')+']';
+  });
+  out=out.replace(/\bFigure\s+(\d)/g,'Fig. $1');
+  out=out.replace(/\bRef\.\s*(\[\d)/g,'$1').replace(/\breference\s*(\[\d)/gi,'$1');
+  out=out.replace(/\b(Chapter|Part)\s+(\d)/g,'Section $2');
+  out=fixSpelling(out);
+  return out;
+}
+
+async function buildFixed(){
+  const zip=await JSZip.loadAsync(ZIPFILE);
+  const xml=await zip.file('word/document.xml').async('string');
+  const doc=new DOMParser().parseFromString(xml,'application/xml');
+  const map=RESULT.refs.map;
+  let edits=0;
+
+  const paras=Array.from(doc.getElementsByTagName('w:p'));
+  let refStart=paras.findIndex(p=>/^\s*references\s*$/i.test(paraText(p)));
+  if(refStart<0) refStart=paras.length;
+
+  /* A) Szövegtörzs — követett csere runonként */
+  for(let i=0;i<refStart;i++){
+    // az élő listát vesszük, mert csere közben változik
+    Array.from(paras[i].getElementsByTagName('w:t')).forEach(t=>{
+      const run=t.parentNode;
+      if(!run || run.nodeName!=='w:r') return;
+      // már korrektúrázott részt nem bántunk
+      if(run.parentNode && /^w:(ins|del)$/.test(run.parentNode.nodeName)) return;
+      const before=t.textContent;
+      const after=applyRules(before,map,false);
+      if(after!==before){ trackedReplaceRun(doc,run,before,after); edits++; }
+    });
+  }
+
+  /* B) Hivatkozáslista — átrendezés + átszámozás korrektúrában */
+  if(refStart<paras.length && RESULT.refs.items.length){
+    const blocks=[]; let cur=null; let seq=0;
+    for(let i=refStart+1;i<paras.length;i++){
+      const t=paraText(paras[i]).trim();
+      if(!t){ if(cur) cur.idx.push(i); continue; }
+      if(/^(appendix|acknowledgement|acknowledgment|nomenclature)\b/i.test(t)) break;
+      const hasNumPr=paras[i].getElementsByTagName('w:numPr').length>0;
+      const m=t.match(/^\[?(\d{1,3})[\.\]\)]\s+/);
+      if(hasNumPr){ cur={n:++seq,idx:[i],auto:true}; blocks.push(cur); }
+      else if(m){ cur={n:+m[1],idx:[i],auto:false}; blocks.push(cur); }
+      else if(cur) cur.idx.push(i);
+    }
+
+    // A tételek szövegéhez alapból nem nyúlunk: a hivatkozott mű címe idézet.
+    // KIVÉTEL: amit a szerkesztő a Crossref-nézetben kipipált.
+    const picks=new Set(Array.from(document.querySelectorAll('.crpick:checked'))
+      .map(c=>+c.dataset.n));
+    if(picks.size){
+      blocks.forEach(b=>{
+        if(!picks.has(b.n)) return;
+        const prop=document.querySelector(`.prop[data-prop="${b.n}"]`);
+        if(!prop) return;
+        const newText=prop.textContent.trim();
+        const first=paras[b.idx[0]];
+        const runs=Array.from(first.getElementsByTagName('w:t'))
+          .map(t=>t.parentNode).filter(r=>r.nodeName==='w:r'
+            && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+        if(!runs.length) return;
+        // teljes tételszöveg cseréje: 1. run kapja az újat, a többi törlésre
+        const whole=runs.map(r=>paraText(r)).join('');
+        trackedReplaceRun(doc,runs[0],whole,newText); edits++;
+        runs.slice(1).forEach(r=>{
+          const txt=paraText(r);
+          if(!txt) return;
+          const p=r.parentNode;
+          p.insertBefore(wrapChange(doc,'w:del',makeRun(doc,r,txt,true)),r);
+          p.removeChild(r);
+        });
+      });
+    }
+
+    const needsReorder=blocks.some(b=>map.get(b.n)!==b.n);
+    if(needsReorder){
+      const sorted=blocks.slice().sort((a,b)=>(map.get(a.n)||999)-(map.get(b.n)||999));
+      const anchor=paras[refStart];
+      const parent=anchor.parentNode;
+      const frag=doc.createDocumentFragment();
+
+      sorted.forEach(b=>{
+        const newN=map.get(b.n);
+        b.idx.forEach(ix=>{
+          const p=paras[ix];
+          // Kézi sorszámnál a szám követett cseréje.
+          // Automatikus számozásnál (numPr) nincs mit cserélni: a Word
+          // a mozgatás után magától újraszámoz.
+          if(ix===b.idx[0] && newN!==b.n && !b.auto){
+            const t0=p.getElementsByTagName('w:t')[0];
+            if(t0){
+              const run=t0.parentNode;
+              const before=t0.textContent;
+              if(/^\[?\d{1,3}[\.\]\)]\s+/.test(before) && run.nodeName==='w:r'){
+                const after=before.replace(/^\[?\d{1,3}[\.\]\)]\s+/,newN+'. ');
+                trackedReplaceRun(doc,run,before,after); edits++;
+              }
+            }
+          }
+          if(ix===b.idx[0] && newN!==b.n && b.auto) edits++;
+          frag.appendChild(p);
+        });
+      });
+      if(anchor.nextSibling) parent.insertBefore(frag,anchor.nextSibling);
+      else parent.appendChild(frag);
+    }
+  }
+
+  /* C) Kereszthivatkozás-mezők — csak ha vannak */
+  let out=new XMLSerializer().serializeToString(doc);
+  if(/instrText[^<]*REF /.test(out)){
+    out=out.replace(/<w:fldChar[^>]*\/>/g,'')
+           .replace(/<w:instrText[^>]*>[^<]*<\/w:instrText>/g,'');
+  }
+
+  /* D) Korrektúra bekapcsolva marad a dokumentumban.
+     A settings.xml sémája KÖTÖTT sorrendű (CT_Settings sequence):
+     a w:trackChanges a proofState/doNotTrackFormatting után,
+     a defaultTabStop elé kerül. Rossz helyre téve a Word hibát jelez. */
+  const stf=zip.file('word/settings.xml');
+  if(stf){
+    let st=await stf.async('string');
+    if(!/<w:trackChanges\s*\/?>/.test(st)){
+      const anchors=['<w:defaultTabStop','<w:drawingGridHorizontalSpacing',
+                     '<w:characterSpacingControl','<w:compat'];
+      let done=false;
+      for(const a of anchors){
+        const i=st.indexOf(a);
+        if(i>-1){ st=st.slice(0,i)+'<w:trackChanges/>'+st.slice(i); done=true; break; }
+      }
+      if(!done) st=st.replace(/(<\/w:settings>)/,'<w:trackChanges/>$1');
+      zip.file('word/settings.xml',st);
+    }
+  }
+
+  zip.file('word/document.xml',out);
+  LASTEDITS=edits;
+  return zip.generateAsync({type:'blob',
+    mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+}
+let LASTEDITS=0;
+
+$('#cr').addEventListener('click',async()=>{
+  $('#cr').disabled=true;
+  try{ await runCrossref(); }
+  catch(e){ $('#cr').textContent='Hiba: '+e.message; }
+  $('#cr').disabled=false;
+});
+
+$('#dl').addEventListener('click',async()=>{
+  $('#dl').disabled=true; $('#dl').textContent='Generálás…';
+  try{
+    const blob=await buildFixed();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=FNAME+'_korrektura.docx'; a.click();
+    $('#dl').textContent=LASTEDITS?`Kész — ${LASTEDITS} követett módosítás`:'Kész — nem kellett módosítás';
+    setTimeout(()=>{$('#dl').textContent='Korrektúrázott .docx letöltése'},4000);
+  }catch(e){
+    $('#dl').textContent='Hiba: '+e.message;
+    setTimeout(()=>{$('#dl').textContent='Korrektúrázott .docx letöltése'},4000);
+  }
+  $('#dl').disabled=false;
+});
+
+$('#rep').addEventListener('click',()=>{
+  const L=[];
+  L.push('PPCI KÉZIRATELLENŐRZÉSI JELENTÉS');
+  L.push('Fájl: '+FNAME+'.docx');
+  L.push('Dátum: '+new Date().toLocaleString('hu-HU'));
+  L.push('Alap: PPCI Author Guidelines, PPCI Sample File, PP Sample Reference List');
+  L.push(''.padEnd(70,'='));
+  L.push(`Megfelel: ${RESULT.score.ok} · Figyelmeztetés: ${RESULT.score.warn} · Hiba: ${RESULT.score.err}`);
+  L.push('');
+  RESULT.checks.forEach(c=>{
+    L.push(({ok:'[OK]  ',warn:'[FIGY]',err:'[HIBA]',info:'[INFO]'})[c.s]+' '+c.t);
+    L.push('       '+c.d); L.push('');
+  });
+  if(!RESULT.refs.inOrder){
+    L.push('HIVATKOZÁS-ÚJRASZÁMOZÁS'); L.push(''.padEnd(70,'-'));
+    RESULT.refs.map.forEach((nw,old)=>{ if(nw!==old) L.push(`  [${old}] -> [${nw}]`); });
+    L.push('');
+  }
+  if(RESULT.refs.fmt.length){
+    L.push('HIVATKOZÁSFORMÁTUM — KÉZI JAVÍTÁST IGÉNYEL'); L.push(''.padEnd(70,'-'));
+    RESULT.refs.fmt.forEach(f=>{
+      L.push(`  [${f.n}] ${f.snip}…`);
+      f.iss.forEach(i=>L.push('        - '+i)); L.push('');
+    });
+  }
+  if(CROSSREF){
+    L.push('CROSSREF-ELLENŐRZÉS'); L.push(''.padEnd(70,'-'));
+    Object.entries(CROSSREF).forEach(([n,v])=>{
+      if(v.status==='nodoi'){ L.push(`  [${n}] nincs DOI — kézi ellenőrzés (ISBN)`); }
+      else if(v.status==='notfound'){ L.push(`  [${n}] A DOI NEM LÉTEZIK a Crossrefben: ${v.doi}`); }
+      else if(v.status==='ok' && !v.diff.length){ L.push(`  [${n}] egyezik — ${v.doi}`); }
+      else if(v.status==='ok'){
+        L.push(`  [${n}] ELTÉRÉS — ${v.doi}`);
+        v.diff.forEach(d=>L.push(`        ${d.f}: kéziratban "${d.ms}" / Crossref "${d.cr}"`));
+      } else L.push(`  [${n}] lekérdezés sikertelen (${v.status})`);
+    });
+    L.push('');
+    L.push('  Megjegyzés: a Crossref a DOI alapján válaszol. Hibás DOI esetén egy');
+    L.push('  létező, de MÁS cikk adatát adja vissza — az eltérés nem feltétlenül');
+    L.push('  a kézirat hibája. Minden javítás szerkesztői jóváhagyással történt.');
+    L.push('');
+  }
+  const b=new Blob([L.join('\n')],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(b); a.download=FNAME+'_ellenorzes.txt'; a.click();
+});
+
+/* ---------- megjelenítés ---------- */
+function render(R){
+  const o=$('#out'); o.classList.remove('hidden');
+  let h='';
+  h+='<div class="scorecard">'
+   +cell('Megfelel',R.score.ok,'ok')
+   +cell('Figyelmeztetés',R.score.warn,R.score.warn?'warn':'ok')
+   +cell('Hiba',R.score.err,R.score.err?'err':'ok')
+   +cell('Hivatkozás',R.refs.listCount,'')
+   +cell('Egyenlet',(R.math.ole+R.math.ole3+R.math.omml),R.math.ole3+R.math.omml?'warn':'ok')
+   +'</div>';
+
+  h+='<h2>Ellenőrzési eredmények</h2>';
+  const ord=['err','warn','info','ok'];
+  ord.forEach(s=>R.checks.filter(c=>c.s===s).forEach(c=>{
+    h+=`<div class="item"><div class="dot ${c.s}"></div><div><div class="t">${c.t}</div><div class="d">${c.d}</div></div></div>`;
+  }));
+
+  if(!R.refs.inOrder){
+    h+='<h2>Hivatkozás-újraszámozási térkép</h2>';
+    h+='<table class="reorder"><tr><th>Régi</th><th></th><th>Új</th><th>Tétel kezdete</th></tr>';
+    R.refs.map.forEach((nw,old)=>{
+      const it=R.refs.items.find(r=>r.n===old);
+      h+=`<tr><td>[${old}]</td><td class="arrow">→</td><td class="${nw!==old?'chg':''}">[${nw}]</td><td>${(it?it.text:'—').slice(0,60)}…</td></tr>`;
+    });
+    h+='</table>';
+  }
+
+  if(R.refs.fmt.length){
+    h+='<h2>Hivatkozásformátum — kézi javítás</h2>';
+    R.refs.fmt.forEach(f=>{
+      h+=`<div class="item"><div class="dot warn"></div><div><div class="t">[${f.n}] ${f.snip}…</div><div class="d">${f.iss.join('<br>')}</div></div></div>`;
+    });
+  }
+
+  h+='<h2>Beágyazott média</h2><div class="log">'+R.media.names.join('\n')+'</div>';
+  o.innerHTML=h;
+  o.scrollIntoView({behavior:'smooth'});
+}
+function cell(k,v,c){return `<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`}
+</script>
+</body>
+</html>
