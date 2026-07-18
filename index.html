@@ -45,6 +45,21 @@ button:disabled{opacity:.35;cursor:not-allowed}
   text-transform:uppercase;color:var(--muted)}
 .cell .v{font-size:23px;font-weight:600;margin-top:6px}
 .v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.err{color:var(--err)}
+.v.fix{color:var(--steel)}
+.dot.fix{background:var(--steel)}
+.grouphead{margin:26px 0 4px;padding:9px 13px;border-radius:3px;font-size:13px;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.grouphead.manual{background:#fbf0f0;border-left:3px solid var(--err)}
+.grouphead.auto{background:#eef2f4;border-left:3px solid var(--steel)}
+.grouphead.ok{background:#f3f8f5;border-left:3px solid var(--ok)}
+.badge{font:600 10px/1 ui-monospace,Menlo,monospace;letter-spacing:.1em;
+  text-transform:uppercase;padding:4px 8px;border-radius:2px;color:#fff;white-space:nowrap}
+.badge.err{background:var(--err)} .badge.fix{background:var(--steel)} .badge.ok{background:var(--ok)}
+.item.manual{background:#fdf7f7} .item.auto{background:#f7f9fa}
+.item.manual,.item.auto{padding-left:12px;border-radius:0 3px 3px 0}
+.passbox{margin-top:4px}
+.passbox summary{cursor:pointer;font-size:12px;color:var(--muted);padding:6px 0;
+  font-family:ui-monospace,Menlo,monospace;letter-spacing:.04em}
 
 h2{font-size:13px;font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.15em;
   text-transform:uppercase;color:var(--steel);margin:30px 0 12px;
@@ -241,8 +256,10 @@ function analyze(doc,zip,xml){
     ? {s:'ok',t:'Minden szövegbeli hivatkozás szerepel a listában',d:'Nincs lógó hivatkozás.'}
     : {s:'err',t:'Hiányzó listatételek',d:'A szövegben hivatkozott, de a listából hiányzó számok: '+R.refs.missing.join(', ')});
 
-  if(autoNum) R.checks.push({s:'warn',t:'A hivatkozáslista Word automatikus számozást használ',
-    d:'A sorszámok nem a szövegben vannak, hanem listaformázásból jönnek. Átrendezéskor a Word magától újraszámoz — de a tördelőnek gyakran fix, beírt sorszám kell. Javasolt a listát sima szöveggé alakítani (Kezdőlap → Számozás ki, majd a számok beírása).'});
+  if(autoNum) R.checks.push({s:'warn',t:'A hivatkozáslista Word automatikus számozást használt',
+    d:'A sorszámok listaformázásból jöttek, nem a szövegből — a tördelőnek viszont fix, beírt sorszám kell. '
+      +'A korrektúrában javítva: minden tétel elé bekerül a végleges [n] sorszám, és az automatikus listaszámozás megszűnik. '
+      +'(A beírt [n] elfogadása/elutasítása követett; maga a listaszámozás-kikapcsolás technikai okból nem vonható vissza a korrektúrán keresztül.)'});
 
   R.checks.push(orphans.length===0
     ? {s:'ok',t:'Minden listatételre hivatkozik a szöveg',d:'Nincs nem hivatkozott tétel.'}
@@ -297,13 +314,26 @@ function analyze(doc,zip,xml){
   if(omml>0) R.checks.push({s:'warn',t:`${omml} natív Word-egyenlet (OMML)`,d:'A Guidelines MathType-ot vagy Equation Editort ír elő. Konverzió: MathType fül → Convert Equations → „Word 2007+" forrás → „MathType equations" cél. Ezt a Word/MathType végzi, böngészőben nem elvégezhető.'});
   if(ole+ole3+omml===0) R.checks.push({s:'err',t:'Nem található szerkeszthető egyenlet',d:'Ha a képletek képként (JPG/PNG/EMF) vannak beszúrva, azt a Guidelines kifejezetten tiltja: „never insert an equation as an image or a text".'});
 
-  // Eq. hivatkozási stílus
+  // Egyenlet-hivatkozási stílus
   const badEq=[];
-  if(/\bequation\s*\(\d/gi.test(textOnly.replace(/^Equation \(\d/gm,'')))
-    badEq.push('„equation (1)" alak — helyesen: Eq. (1); mondat elején: Equation (1)');
-  if(/(?<![\w.])\bEquation\b\s*\(\d/g.test(textOnly)) {} // mondat eleji, rendben
-  if(badEq.length) R.checks.push({s:'warn',t:'Egyenlet-hivatkozási stílus',d:badEq.join(' · ')});
-  else R.checks.push({s:'ok',t:'Egyenlet-hivatkozások stílusa rendben',d:'„Eq. (n)" alak.'});
+  if(/[^.!?]\s[Ee]quation\s+\(\d/.test(textOnly))
+    badEq.push('mondat közben „equation (1)" / „Equation (1)" — helyesen: Eq. (1)');
+  if(/(^|[.!?]\s+)Eq\.\s*\(\d/m.test(textOnly))
+    badEq.push('mondat elején „Eq. (1)" — helyesen: Equation (1)');
+  R.checks.push(badEq.length
+    ? {s:'warn',t:'Egyenlet-hivatkozási stílus',d:badEq.join(' · ')+'. A korrektúrában javítva.'}
+    : {s:'ok',t:'Egyenlet-hivatkozások stílusa rendben',d:'„Eq. (n)" alak, mondat elején „Equation (n)".'});
+
+  // Hivatkozásblokk alakja: 2 szomszédos -> [1, 2]; 3+ összefüggő -> [3–5]
+  const badRange=[];
+  (textOnly.match(/\[[\d\s,–\-−]+\]/g)||[]).forEach(c=>{
+    const rg=c.match(/(\d+)\s*[–\-−]\s*(\d+)/);
+    if(rg && (+rg[2] - +rg[1]) < 2) badRange.push(c);
+    if(/-/.test(c) && !/–/.test(c) && rg) badRange.push(c+' (rövid kötőjel)');
+  });
+  R.checks.push(badRange.length===0
+    ? {s:'ok',t:'Hivatkozásblokkok alakja rendben',d:'Két tétel vesszővel, három vagy több nagykötőjeles tartománnyal.'}
+    : {s:'warn',t:'Hivatkozásblokk alakja',d:'A Guidelines szerint két szomszédos tétel vesszővel: [1, 2]; három vagy több összefüggő nagykötőjellel: [3–5]. Érintett: '+[...new Set(badRange)].join(', ')+'. A korrektúrában javítva.'});
 
   /* --- 5. Ábra- és táblázathivatkozások --- */
   const figRefBad=(textOnly.match(/\bFigure\s+\d/g)||[]).length;
@@ -342,19 +372,92 @@ function analyze(doc,zip,xml){
       ? {s:'ok',t:`Kulcsszavak: ${parts.length} db`,d:'A 3–5 közötti tartományban.'}
       : {s:'err',t:`Kulcsszavak: ${parts.length} db`,d:'3–5 kulcsszó kötelező.'});
     R.checks.push(/;/.test(kw)
-      ? {s:'err',t:'A kulcsszavak pontosvesszővel vannak elválasztva',d:'A Guidelines vesszőt ír elő. Az alkalmazás javítja.'}
+      ? {s:'err',t:'A kulcsszavak pontosvesszővel vannak elválasztva',d:'A Guidelines vesszőt ír elő. A korrektúrában javítva.'}
       : {s:'ok',t:'A kulcsszavak vesszővel elválasztva',d:'Megfelel.'});
     R.checks.push(bad.length>0
-      ? {s:'warn',t:'Nagybetűvel kezdődő kulcsszavak',d:'„'+bad.join('", "')+'" — kisbetűvel kell kezdeni. Az alkalmazás javítja.'}
+      ? {s:'warn',t:'Nagybetűvel kezdődő kulcsszavak',d:'„'+bad.join('", "')+'" — kisbetűvel kell kezdeni. A korrektúrában javítva (a mozaikszavak, pl. BOTDR, érintetlenek).'}
       : {s:'ok',t:'A kulcsszavak kisbetűvel kezdődnek',d:'Megfelel.'});
   }
 
   /* --- 7. Szakaszcímek --- */
-  const secs=texts.filter(t=>/^\s*\d+(\.\d+){0,2}\.?\s*\S/.test(t) && t.length<90);
+  // A minta fájl (PPCI_Sample_File) szerint a helyes alak: "1 Introduction"
+  // — a szám után SZÓKÖZ, nem pont. Alcím: "1.1 Subtitle".
+  // FONTOS: a sorszám lehet a SZÖVEGBEN (kézi) VAGY Word automatikus
+  // számozásból (numPr). Az utóbbinál a szám nem látszik a w:t-ben, de a
+  // Word megjeleníti — ilyenkor a szöveges alakot NEM kell javítani.
+  const headStyles=/^(PPHeading|heading[1-9])$/;
+  // numId=0 = "számozás kikapcsolva" -> valójában kézi (a szám a szövegben van).
+  // Csak a valódi numId>0 számít automatikusnak.
+  function realAuto(p){
+    const np=p.getElementsByTagName('w:numPr')[0];
+    if(!np) return false;
+    const ni=np.getElementsByTagName('w:numId')[0];
+    return ni && ni.getAttribute('w:val')!=='0';
+  }
+  const heads=[];
+  paras.forEach((p,i)=>{
+    const st=p.getElementsByTagName('w:pStyle')[0];
+    const v=st&&st.getAttribute('w:val');
+    if(v&&headStyles.test(v)){
+      const t=texts[i].trim();
+      if(t) heads.push({i,t,style:v,auto:realAuto(p)});
+    }
+  });
+  R.heads=heads;
+
+  const backmatter=/^(acknowledgement|acknowledgment|references|nomenclature|funding|conflict|author contributions|institutional|informed|data availability|appendix)/i;
+
+  // Alakhiba a kézi számozású címeknél (a szám a szövegben van, de rossz alakú)
+  const numBad=[];
+  heads.forEach(h=>{
+    if(backmatter.test(h.t)) return;
+    if(h.auto) return;
+    const m=h.t.match(/^(\d+(?:\.\d+)*)(\.?)(\s*)(\S)/);
+    if(!m) return; // számozatlan -> lent, az auto-ágban kezeljük
+    if(m[2]==='.') numBad.push({t:h.t,why:'felesleges pont a sorszám után'});
+    else if(!m[3]) numBad.push({t:h.t,why:'hiányzó szóköz a sorszám után'});
+  });
+  R.numBad=numBad;
+
+  // Automatikus számozású főcím, aminek a száma nincs a szövegben.
+  // Ha az alcímekből levezethető, a korrektúra beírja; ha nem, kézi.
+  const autoNoText=[];
+  heads.forEach((h,idx)=>{
+    if(!h.auto || /^\d/.test(h.t) || backmatter.test(h.t)) return;
+    let num=null;
+    for(let k=idx+1;k<heads.length;k++){
+      const m=heads[k].t.match(/^(\d+)\.\d/);
+      if(m){ num=+m[1]; break; }
+      if(/^\d+(\s|$)/.test(heads[k].t)) break;
+    }
+    autoNoText.push({t:h.t,num});
+  });
+  const derivable=autoNoText.filter(a=>a.num!==null);
+  const notDerivable=autoNoText.filter(a=>a.num===null);
+
+  if(numBad.length || derivable.length){
+    const parts=[];
+    if(numBad.length) parts.push(numBad.map(b=>'„'+b.t.slice(0,36)+'" ('+b.why+')').join('; '));
+    if(derivable.length) parts.push(derivable.map(a=>'„'+a.t.slice(0,30)+'" → '+a.num+' beírva (automatikus számozás megszüntetve)').join('; '));
+    R.checks.push({s:'err',t:`${numBad.length+derivable.length} szakaszcím számozása javításra szorult`,
+      d:'A minta szerint „1 Introduction" a helyes (szám + szóköz a szövegben, pont nélkül). '
+        +parts.join('; ')+'. A korrektúrában javítva.'
+        +(derivable.length?' (Megjegyzés: ahol az automatikus számozást szüntettük meg, a beírt szám elfogadása/elutasítása követett, de maga a listaszámozás-kikapcsolás technikai okból nem vonható vissza a korrektúrán keresztül.)':'')});
+  } else {
+    R.checks.push({s:'ok',t:'A szakaszcímek számozása a minta szerinti',d:'„1 Introduction" alak.'});
+  }
+
+  if(notDerivable.length){
+    R.checks.push({s:'err',t:`${notDerivable.length} szakaszcím sorszáma nem vezethető le`,
+      d:notDerivable.map(a=>'„'+a.t.slice(0,45)+'"').join('; ')
+        +' — automatikus számozású, de nincs alatta alcím, amiből a főszám kiderülne. '
+        +'Ezt kézzel kell beírni Wordben.'});
+  }
+
   const chap=(textOnly.match(/\b(Chapter|Part)\s+\d/g)||[]).length;
   R.checks.push(chap===0
     ? {s:'ok',t:'Szakaszokra „Section" néven hivatkozik',d:'Nincs „Chapter"/„Part".'}
-    : {s:'err',t:`${chap} db „Chapter"/„Part" hivatkozás`,d:'Helyette „Section n" használandó. Az alkalmazás javítja.'});
+    : {s:'err',t:`${chap} db „Chapter"/„Part" hivatkozás`,d:'Helyette „Section n" használandó. A korrektúrában javítva.'});
   const deep=texts.filter(t=>/^\s*\d+\.\d+\.\d+\.\d+/.test(t));
   R.checks.push(deep.length===0
     ? {s:'ok',t:'Legfeljebb három címszint',d:'Megfelel a hierarchiakorlátnak.'}
@@ -393,6 +496,26 @@ function analyze(doc,zip,xml){
   const tbls=(xml.match(/<w:tbl>/g)||[]).length;
   R.checks.push({s:'info',t:`${figCaps} ábrafelirat, ${tabCaps} táblázatfelirat, ${tbls} valódi táblázat`,
     d:'A táblázatok nem lehetnek képek — a táblázatfeliratok száma és a valódi Word-táblázatok száma közti eltérés képként beszúrt táblázatra utalhat.'});
+
+  /* --- 10b. Feliratok záró pontja a minta fájl szerint --- */
+  // A stílus-ellenőrzések (felirat-stílusvesztés, nem-sablon bekezdésstílusok)
+  // szándékosan kimaradnak: azok tördelési feladatok, nem a bírálat tárgyai.
+  const caps=[];
+  paras.forEach((p,i)=>{
+    const t=texts[i].trim();
+    if(!/^(Fig\.|Figure|Table)\s*\d+\s/i.test(t)) return;
+    if(t.length>200) return;
+    caps.push({t});
+  });
+
+  // A minta feliratai pont nélkül záródnak ("Fig. 2 Vector format line drawing in EPS").
+  const dotted=caps.filter(c=>/\.$/.test(c.t) && !/\betc\.$|\bal\.$/i.test(c.t));
+  R.checks.push(dotted.length===0
+    ? {s:'ok',t:'A feliratok nem végződnek ponttal',d:'Megfelel a minta fájlnak.'}
+    : {s:'warn',t:`${dotted.length} felirat ponttal végződik`,
+       d:'A minta fájl feliratai pont nélkül záródnak („Fig. 2 Vector format line drawing in EPS"). '
+         +'Érintett: '+dotted.slice(0,4).map(c=>'„'+c.t.slice(0,34)+'…"').join(', ')
+         +(dotted.length>4?' és még '+(dotted.length-4):'')+'. A korrektúrában javítva.'});
 
   /* --- 11. Terjedelem --- */
   const words=body.split(/\s+/).filter(Boolean).length;
@@ -512,11 +635,42 @@ function compareRef(text,cr){
   return d;
 }
 
+/* Öndiagnosztika: egy ismert, biztosan létező DOI-val teszteli a kapcsolatot,
+   mielőtt a teljes listát végigkérdezné. Így elkülöníthető, hogy a kapcsolat
+   rossz-e, vagy tényleg a kézirat DOI-jai hibásak. */
+async function crossrefSelfTest(){
+  const known='10.1145/3292522.3326037'; // létező, régi, stabil rekord
+  const url='https://api.crossref.org/works/'+known;
+  try{
+    const r=await fetch(url);
+    if(r.ok){
+      const j=await r.json();
+      if(j && j.message) return {ok:true};
+      return {ok:false,why:'A válasz megérkezett, de nem a várt JSON. Lehet, hogy egy hálózati köztes elem (proxy, tűzfal) módosítja.'};
+    }
+    return {ok:false,why:`A Crossref HTTP ${r.status} státusszal válaszolt egy biztosan létező DOI-ra. Ez a Crossref átmeneti hibája vagy forgalomkorlátozás lehet — próbálja néhány perc múlva.`};
+  }catch(e){
+    const isFile=location.protocol==='file:';
+    return {ok:false,why:isFile
+      ? 'Az oldal file:// címről nyílt meg, ezért a böngésző letiltja a külső lekérdezést. Töltse fel https:// címre.'
+      : `A kérés nem jutott el a Crossrefig (${e.message}). Lehetséges okok: intézményi tűzfal vagy proxy blokkolja az api.crossref.org címet; böngészőkiegészítő (reklám-/nyomkövetésblokkoló) tiltja a kérést; vagy nincs internetkapcsolat. Próbálja privát ablakban, kiegészítők nélkül.`};
+  }
+}
+
 async function runCrossref(){
   const btn=$('#cr');
   const items=RESULT.refs.items;
   CROSSREF={};
-  let done=0, halted=false;
+  let done=0, halted=false, haltWhy='';
+
+  // Előbb a kapcsolatot ellenőrizzük, nehogy 21 hamis hibát írjunk ki
+  btn.textContent='Kapcsolat ellenőrzése…';
+  const st=await crossrefSelfTest();
+  if(!st.ok){
+    btn.textContent='Crossref-ellenőrzés';
+    renderCrossrefFail(st.why);
+    return;
+  }
 
   for(const it of items){
     const doi=extractDOI(it.text);
@@ -527,10 +681,9 @@ async function runCrossref(){
     catch(e){ r={status:'neterr',msg:e.message}; }
 
     if(r.status==='neterr'){
-      // Hálózati/CORS hiba: NEM állítjuk, hogy a DOI hibás. Leállunk,
-      // különben minden további tétel hamis "nem található" jelzést kapna.
+      // Hálózati hiba: NEM állítjuk, hogy a DOI hibás. Leállunk.
       CROSSREF[it.n]={...r,doi};
-      halted=true;
+      halted=true; haltWhy=r.msg||'';
       break;
     }
     if(r.status==='ratelimit'){
@@ -545,23 +698,31 @@ async function runCrossref(){
     await sleep(CR_DELAY);
   }
   btn.textContent='Crossref-ellenőrzés';
-  renderCrossref(halted);
+  renderCrossref(halted,haltWhy);
 }
 
-function renderCrossref(halted){
+function renderCrossrefFail(why){
+  const box=$('#crout');
+  box.innerHTML='<h2>Crossref-ellenőrzés</h2>'
+   +'<div class="item"><div class="dot err"></div><div>'
+   +'<div class="t">Nem sikerült kapcsolódni a Crossref-hez</div>'
+   +'<div class="d">'+esc(why)+'<br><br><strong>A kézirat DOI-jai nem lettek ellenőrizve</strong> — '
+   +'ez a hibaüzenet a kapcsolatról szól, nem a hivatkozásokról.</div></div></div>';
+  box.classList.remove('hidden');
+  box.scrollIntoView({behavior:'smooth'});
+}
+
+function renderCrossref(halted,haltWhy){
   const box=$('#crout');
   const ent=Object.entries(CROSSREF);
   let h='<h2>Crossref-ellenőrzés</h2>';
 
   if(halted){
-    const isFile=location.protocol==='file:';
-    h+='<div class="item"><div class="dot err"></div><div><div class="t">A lekérdezés megszakadt — nem sikerült elérni a Crossref-et</div>'
-     +'<div class="d">'
-     +(isFile
-       ? 'Az oldal <code>file://</code> címről nyílt meg, ezért a böngésző letiltja a külső lekérdezést. Töltse fel egy <code>https://</code> címre (GitHub Pages vagy belső webszerver), és ott működni fog.'
-       : 'Hálózati hiba vagy a Crossref átmeneti elérhetetlensége. Próbálja újra néhány perc múlva.')
-     +' <strong>Amit eddig lekérdezett, azt lent látja; a többi tétel nem lett ellenőrizve.</strong>'
-     +' Fontos: ez nem jelenti azt, hogy a DOI-k hibásak.</div></div></div>';
+    h+='<div class="item"><div class="dot err"></div><div><div class="t">A lekérdezés félbeszakadt</div>'
+     +'<div class="d">A kapcsolat menet közben megszakadt'
+     +(haltWhy?' ('+esc(haltWhy)+')':'')+'. '
+     +'<strong>A hátralévő tételek nem lettek ellenőrizve</strong> — ez nem jelenti azt, hogy a DOI-juk hibás. '
+     +'Próbálja újra néhány perc múlva.</div></div></div>';
     box.innerHTML=h; box.classList.remove('hidden');
     box.scrollIntoView({behavior:'smooth'});
     return;
@@ -584,7 +745,7 @@ function renderCrossref(halted){
 
   if(wrongs.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${wrongs.length} tétel DOI-ja másik közleményre mutat</div><div class="d">Tétel: ${wrongs.map(([n])=>'['+n+']').join(', ')} — a megadott DOI létezik, de nem ahhoz a cikkhez tartozik, amit a tétel megnevez. Ez a leggyakoribb súlyos hivatkozási hiba. A szerzőnek kell tisztáznia; automatikusan nem javítható.</div></div></div>`;
 
-  if(nf.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${nf.length} DOI nem található a Crossrefben</div><div class="d">Tétel: ${nf.map(([n])=>'['+n+']').join(', ')} — leggyakrabban elgépelt DOI. Ritkábban a DOI másik ügynökségnél (DataCite, mEDRA) van regisztrálva, vagy még nem indexelt. Nyissa meg a doi.org linket: ha az működik, a DOI jó, csak a Crossref nem ismeri.</div></div></div>`;
+  if(nf.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${nf.length} DOI nem található a Crossrefben</div><div class="d">Tétel: ${nf.map(([n])=>'['+n+']').join(', ')} — a Crossref válaszolt, de ezeket a DOI-kat nem ismeri. Nyissa meg a doi.org linket: ha az sem működik, a DOI nem létezik. Sok ilyen tétel esetén érdemes a hivatkozott műveket tételesen visszakérni a szerzőtől, mert előfordul, hogy nem csak a DOI hibás, hanem a hivatkozott közlemény sem található.</div></div></div>`;
   if(nod.length) h+=`<div class="item"><div class="dot info"></div><div><div class="t">${nod.length} tételnek nincs DOI-ja</div><div class="d">Tétel: ${nod.map(([n])=>'['+n+']').join(', ')} — jellemzően könyv vagy szabvány. Kézi ellenőrzés szükséges (ISBN).</div></div></div>`;
 
   if(diffs.length){
@@ -645,6 +806,35 @@ function makeRun(doc,proto,text,isDel){
   r.appendChild(t);
   return r;
 }
+// A bekezdés listaszámozásának kikapcsolása: numId=0 a stílusból örökölt
+// számozást is felülírja (Wordben "nincs lista"). A pPr elejére kerül,
+// a pStyle után, a séma szerinti helyre.
+function setParaNoNumber(doc,p){
+  let pPr=p.getElementsByTagName('w:pPr')[0];
+  if(!pPr){
+    pPr=doc.createElement('w:pPr');
+    p.insertBefore(pPr,p.firstChild);
+  }
+  // meglévő numPr eltávolítása
+  const old=pPr.getElementsByTagName('w:numPr')[0];
+  if(old) old.parentNode.removeChild(old);
+  const numPr=doc.createElement('w:numPr');
+  const ilvl=doc.createElement('w:ilvl'); ilvl.setAttribute('w:val','0');
+  const numId=doc.createElement('w:numId'); numId.setAttribute('w:val','0');
+  numPr.appendChild(ilvl); numPr.appendChild(numId);
+  // A CT_PPr séma kötött sorrendű. A numPr a pStyle/keepNext/keepLines/
+  // pageBreakBefore/framePr/widowControl UTÁN, minden más ELÉ kerül.
+  const before=['pStyle','keepNext','keepLines','pageBreakBefore','framePr','widowControl'];
+  let anchor=null;
+  for(const ch of Array.from(pPr.childNodes)){
+    const nm=(ch.nodeName||'').replace(/^w:/,'');
+    if(before.includes(nm)) anchor=ch; else break;
+  }
+  if(anchor && anchor.nextSibling) pPr.insertBefore(numPr,anchor.nextSibling);
+  else if(anchor) pPr.appendChild(numPr);
+  else pPr.insertBefore(numPr,pPr.firstChild);
+}
+
 function wrapChange(doc,tag,node){
   const w=doc.createElement(tag); // w:ins | w:del
   w.setAttribute('w:id',String(RID++));
@@ -690,22 +880,80 @@ function fixSpelling(s){
 /* Javítószabályok.
    isRefList=true esetén a tétel SZÖVEGÉHEZ nem nyúlunk: a hivatkozott mű
    címe idézet, az eredeti (akár brit) helyesírását meg kell őrizni. */
+/* A kulcsszósor javítása: pontosvessző -> vessző, és kisbetűs kezdés.
+   A mozaikszavakat (BOTDR, MIDAS GTS NX) és a tulajdonneveket nem
+   kisbetűsítjük — csak az olyan szót, ami csupa kisbetű az első betű után. */
+function fixKeywords(s){
+  const parts=s.split(/\s*[;,]\s*/).map(p=>p.trim()).filter(Boolean);
+  if(!parts.length) return s;
+  const fixed=parts.map(p=>{
+    const w=p.split(' ')[0];
+    // csupa nagybetűs mozaikszó vagy nagybetűvel folytatódó szó: hagyjuk
+    if(/^[A-Z]{2,}$/.test(w)) return p;
+    if(/^[A-Z][a-z]*[A-Z]/.test(w)) return p;
+    if(/^[A-Z]/.test(w)) return p[0].toLowerCase()+p.slice(1);
+    return p;
+  });
+  return fixed.join(', ');
+}
+
+/* Szövegbeli hivatkozásblokk normalizálása a Guidelines szerint:
+   - két szomszédos tétel: [1, 2]  (vessző!)
+   - három vagy több összefüggő: [3–5]  (nagykötőjel)
+   Ezért a [20-21] HELYESEN [20, 21], nem [20–21]. */
+function normalizeCite(nums){
+  if(!nums.length) return '';
+  const out=[]; let i=0;
+  while(i<nums.length){
+    let j=i;
+    while(j+1<nums.length && nums[j+1]===nums[j]+1) j++;
+    const len=j-i+1;
+    if(len>=3) out.push(nums[i]+'–'+nums[j]);   // 3+ -> tartomány
+    else for(let k=i;k<=j;k++) out.push(String(nums[k])); // 1-2 -> külön
+    i=j+1;
+  }
+  return out.join(', ');
+}
+
 function applyRules(s,map,isRefList){
   if(isRefList) return s;
   let out=s;
   out=out.replace(/\[([\d\s,–\-−]+)\]/g,(full,inner)=>{
     if(!/\d/.test(inner)) return full;
-    const parts=inner.split(',').map(p=>p.trim()).map(p=>{
+    // 1) minden szám kibontása (a tartományokat is)
+    const nums=[];
+    inner.split(',').forEach(p=>{
+      p=p.trim();
       const rg=p.match(/^(\d+)\s*[–\-−]\s*(\d+)$/);
-      if(rg){ const a=map.get(+rg[1]),b=map.get(+rg[2]); return (a&&b)?(a+'–'+b):p; }
-      const n=+p; return map.has(n)?String(map.get(n)):p;
+      if(rg){ for(let i=+rg[1];i<=+rg[2];i++) nums.push(i); }
+      else if(/^\d+$/.test(p)) nums.push(+p);
     });
-    return '['+parts.join(', ')+']';
+    if(!nums.length) return full;
+    // 2) átszámozás az új sorrend szerint
+    const mapped=nums.map(n=>map.has(n)?map.get(n):n);
+    // 3) rendezés + duplikátumok kiszűrése
+    const uniq=[...new Set(mapped)].sort((a,b)=>a-b);
+    return '['+normalizeCite(uniq)+']';
   });
   out=out.replace(/\bFigure\s+(\d)/g,'Fig. $1');
   out=out.replace(/\bRef\.\s*(\[\d)/g,'$1').replace(/\breference\s*(\[\d)/gi,'$1');
   out=out.replace(/\b(Chapter|Part)\s+(\d)/g,'Section $2');
+  out=fixEqRefs(out);
   out=fixSpelling(out);
+  return out;
+}
+
+/* Egyenlet-hivatkozások: a Guidelines szerint "Eq. (1)", mondat elején
+   "Equation (1)". A "equation (1)" és a puszta "(1)" hibás.
+   Mondatkezdet: sor eleje, vagy .!? + szóköz után. */
+function fixEqRefs(s){
+  let out=s;
+  // mondat közben: "Equation (1)" / "equation (1)" -> "Eq. (1)"
+  out=out.replace(/([^.!?]\s)[Ee]quation\s+\((\d+)\)/g,'$1Eq. ($2)');
+  // mondat elején: "Eq. (1)" -> "Equation (1)"
+  out=out.replace(/(^|[.!?]\s+)Eq\.\s*\((\d+)\)/g,(m,pre,n)=>pre+'Equation ('+n+')');
+  // "equations (1)" többes szám mondat közben
+  out=out.replace(/([^.!?]\s)equations\s+\((\d+)\)/g,'$1Eqs. ($2)');
   return out;
 }
 
@@ -720,8 +968,27 @@ async function buildFixed(){
   let refStart=paras.findIndex(p=>/^\s*references\s*$/i.test(paraText(p)));
   if(refStart<0) refStart=paras.length;
 
+  // A kulcsszósor: a "Keywords" cím utáni első nem üres bekezdés.
+  // Erre külön szabály vonatkozik (vessző + kisbetű), ezért kijelöljük,
+  // hogy az általános szövegjavítás ne fusson rá kétszer.
+  let kwIdx=-1;
+  const ki=paras.findIndex(p=>/^\s*keywords?\s*$/i.test(paraText(p)));
+  if(ki>-1){
+    for(let i=ki+1;i<paras.length && i<ki+4;i++){
+      if(paraText(paras[i]).trim()){ kwIdx=i; break; }
+    }
+  }
+
   /* A) Szövegtörzs — követett csere runonként */
+  const headRe0=/^(PPHeading|heading[1-9])$/;
   for(let i=0;i<refStart;i++){
+    if(i===kwIdx) continue; // külön kezeljük lent
+    const st0=paras[i].getElementsByTagName('w:pStyle')[0];
+    const v0=st0&&st0.getAttribute('w:val');
+    if(v0&&headRe0.test(v0)) continue; // a címeket az A3 blokk kezeli
+    const pt0=paraText(paras[i]).trim();
+    const isCap=/^(Fig\.|Figure|Table)\s*\d+\s/i.test(pt0) && pt0.length<=200;
+    if(isCap) continue; // a feliratokat az A4 blokk kezeli
     // az élő listát vesszük, mert csere közben változik
     Array.from(paras[i].getElementsByTagName('w:t')).forEach(t=>{
       const run=t.parentNode;
@@ -732,6 +999,132 @@ async function buildFixed(){
       const after=applyRules(before,map,false);
       if(after!==before){ trackedReplaceRun(doc,run,before,after); edits++; }
     });
+  }
+
+  /* A2) Kulcsszavak — pontosvessző helyett vessző, kisbetűs kezdés */
+  if(kwIdx>-1){
+    const runs=Array.from(paras[kwIdx].getElementsByTagName('w:t'))
+      .map(t=>t.parentNode)
+      .filter(r=>r && r.nodeName==='w:r'
+        && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+    if(runs.length){
+      const whole=runs.map(r=>paraText(r)).join('');
+      const fixed=fixKeywords(whole);
+      if(fixed!==whole){
+        trackedReplaceRun(doc,runs[0],whole,fixed); edits++;
+        // a többi run tartalma a törlésbe kerül
+        runs.slice(1).forEach(r=>{
+          const txt=paraText(r);
+          if(!txt) return;
+          const p=r.parentNode;
+          p.insertBefore(wrapChange(doc,'w:del',makeRun(doc,r,txt,true)),r);
+          p.removeChild(r);
+        });
+      }
+    }
+  }
+
+  /* A3) Szakaszcímek sorszáma — a minta szerint "1 Introduction"
+     (szám + szóköz, pont nélkül). Csak az alakot igazítjuk; hiányzó
+     sorszámot NEM találunk ki, azt az ellenőrzés jelzi a szerkesztőnek.
+     FONTOS: a cím több runra oszolhat ("2. " | "Micropile" | "–Bored…"),
+     ezért CSAK a sorszámot hordozó ELSŐ runt írjuk át — a teljes bekezdés
+     cseréje megduplázná a szöveget. */
+  const headRe=/^(PPHeading|heading[1-9])$/;
+
+  // Egy cím VALÓDI automatikus számozású-e. A numId=0 a Wordben "számozás
+  // kikapcsolva" — az gyakorlatilag kézi, a szám a szövegben van.
+  function realAutoNum(p){
+    const np=p.getElementsByTagName('w:numPr')[0];
+    if(!np) return false;
+    const ni=np.getElementsByTagName('w:numId')[0];
+    return ni && ni.getAttribute('w:val')!=='0';
+  }
+
+  /* A3-előkészítés: a valódi automatikus számozású főcímeknél a sorszám
+     nem a szövegben van (a Word generálja). Egységesítjük KÉZI számozásra:
+     a főszámot az alcímekből vezetjük le (pl. alatta "4.1..4.4" -> a főcím "4"),
+     beírjuk a szövegbe követett módosításként, és levesszük a numPr-t, hogy
+     ne legyen dupla szám. Csak ha a szám EGYÉRTELMŰEN kikövetkeztethető. */
+  const headList=[];
+  for(let i=0;i<refStart;i++){
+    const st=paras[i].getElementsByTagName('w:pStyle')[0];
+    const v=st&&st.getAttribute('w:val');
+    if(v&&headRe.test(v)){
+      const t=paraText(paras[i]).trim();
+      if(t) headList.push({i,t,auto:realAutoNum(paras[i])});
+    }
+  }
+  headList.forEach((h,idx)=>{
+    if(!h.auto || /^\d/.test(h.t)) return;
+    if(/^(acknowledgement|acknowledgment|references|nomenclature|funding|conflict|author contributions|institutional|informed|data availability|appendix)/i.test(h.t)) return;
+    let num=null;
+    for(let k=idx+1;k<headList.length;k++){
+      const m=headList[k].t.match(/^(\d+)\.\d/);
+      if(m){ num=+m[1]; break; }
+      if(/^\d+(\s|$)/.test(headList[k].t)) break;
+    }
+    if(num===null) return; // nem vezethető le biztosan -> marad kézi jelzésnek
+    const p=paras[h.i];
+    const runs=Array.from(p.getElementsByTagName('w:t'))
+      .map(t=>t.parentNode)
+      .filter(r=>r && r.nodeName==='w:r'
+        && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+    if(!runs.length) return;
+    const first=paraText(runs[0]);
+    trackedReplaceRun(doc,runs[0],first,num+' '+first); edits++;
+    const pPr=p.getElementsByTagName('w:pPr')[0];
+    const np=pPr&&pPr.getElementsByTagName('w:numPr')[0];
+    if(np) np.parentNode.removeChild(np);
+  });
+
+  for(let i=0;i<refStart;i++){
+    const st=paras[i].getElementsByTagName('w:pStyle')[0];
+    const v=st&&st.getAttribute('w:val');
+    if(!v||!headRe.test(v)) continue;
+    // Ami valódi auto-számozású maradt (nem sikerült levezetni): kihagyjuk.
+    if(realAutoNum(paras[i])) continue;
+    const whole=paraText(paras[i]).trim();
+    if(!whole) continue;
+    if(/^(acknowledgement|acknowledgment|references|nomenclature|funding|conflict|author contributions|institutional|informed|data availability|appendix)/i.test(whole)) continue;
+    if(!/^\d/.test(whole)) continue; // számozatlan kézi cím: nem találunk ki sorszámot
+
+    const runs=Array.from(paras[i].getElementsByTagName('w:t'))
+      .map(t=>t.parentNode)
+      .filter(r=>r && r.nodeName==='w:r'
+        && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+    if(!runs.length) continue;
+
+    const first=paraText(runs[0]);
+    let fixed;
+    if(/^\d+(\.\d+)*\.?\s*$/.test(first)){
+      // a run CSAK a sorszámot tartalmazza: "2. " -> "2 "
+      fixed=first.replace(/^(\d+(?:\.\d+)*)\.?\s*$/,'$1 ');
+    } else {
+      // a run a sorszámot ÉS a cím elejét is tartalmazza
+      fixed=first.replace(/^(\d+(?:\.\d+)*)\.?\s*(\S)/,'$1 $2');
+    }
+    if(fixed===first) continue;
+    trackedReplaceRun(doc,runs[0],first,fixed); edits++;
+  }
+
+  /* A4) Ábra-/táblázatfeliratok záró pontja — a minta feliratai pont
+     nélkül végződnek. Csak az UTOLSÓ run végéről vesszük le a pontot. */
+  for(let i=0;i<refStart;i++){
+    const t=paraText(paras[i]).trim();
+    if(!/^(Fig\.|Figure|Table)\s*\d+\s/i.test(t)) continue;
+    if(t.length>200) continue;
+    if(!/\.$/.test(t)) continue;
+    if(/\betc\.$|\bal\.$/i.test(t)) continue; // "etc." / "et al." nem záró pont
+    const runs=Array.from(paras[i].getElementsByTagName('w:t'))
+      .map(x=>x.parentNode)
+      .filter(r=>r && r.nodeName==='w:r'
+        && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+    if(!runs.length) continue;
+    const last=runs[runs.length-1];
+    const lt=paraText(last);
+    if(!/\.$/.test(lt)) continue;
+    trackedReplaceRun(doc,last,lt,lt.replace(/\.$/,'')); edits++;
   }
 
   /* B) Hivatkozáslista — átrendezés + átszámozás korrektúrában */
@@ -757,9 +1150,13 @@ async function buildFixed(){
         if(!picks.has(b.n)) return;
         const prop=document.querySelector(`.prop[data-prop="${b.n}"]`);
         if(!prop) return;
-        const newText=prop.textContent.trim();
-        const first=paras[b.idx[0]];
-        const runs=Array.from(first.getElementsByTagName('w:t'))
+        let newText=prop.textContent.trim();
+        // ha a lista automatikus számozású, a csereszöveg is kapja meg a [n]-t
+        if(b.auto && !/^\[\d+\]/.test(newText)){
+          newText='['+(map.get(b.n)||b.n)+'] '+newText;
+        }
+        const firstP=paras[b.idx[0]];
+        const runs=Array.from(firstP.getElementsByTagName('w:t'))
           .map(t=>t.parentNode).filter(r=>r.nodeName==='w:r'
             && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
         if(!runs.length) return;
@@ -773,6 +1170,11 @@ async function buildFixed(){
           p.insertBefore(wrapChange(doc,'w:del',makeRun(doc,r,txt,true)),r);
           p.removeChild(r);
         });
+        // a cserélt tételnél is kikapcsoljuk a stílus-számozást, ha auto volt
+        if(b.auto){
+          setParaNoNumber(doc,firstP);
+          b.numbered=true; // jelöljük, hogy a B2 már ne bántsa
+        }
       });
     }
 
@@ -807,6 +1209,35 @@ async function buildFixed(){
       });
       if(anchor.nextSibling) parent.insertBefore(frag,anchor.nextSibling);
       else parent.appendChild(frag);
+    }
+
+    /* B2) Automatikus számozású hivatkozáslista -> beírt [n] sorszám.
+       A Guidelines szerint a hivatkozás szögletes zárójeles szám ([1]).
+       A listaszámozás a tördelőnek gond, ezért a végleges sorszámot
+       beírjuk a szövegbe, és levesszük a numPr-t. A sorszám a VÉGLEGES
+       sorrend szerinti (map), így az átrendezéssel is konzisztens. */
+    const autoBlocks=blocks.filter(b=>b.auto);
+    if(autoBlocks.length){
+      autoBlocks.forEach(b=>{
+        if(b.numbered) return; // a Crossref-csere már beszámozta
+        const p=paras[b.idx[0]];
+        // csak ha még nincs szövegbeli [n] a tétel elején
+        const firstT=paraText(p).trimStart();
+        if(/^\[\d+\]/.test(firstT)) return;
+        const newN=map.get(b.n)||b.n;
+        const runs=Array.from(p.getElementsByTagName('w:t'))
+          .map(t=>t.parentNode)
+          .filter(r=>r && r.nodeName==='w:r'
+            && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+        if(!runs.length) return;
+        const first=paraText(runs[0]);
+        trackedReplaceRun(doc,runs[0],first,'['+newN+'] '+first); edits++;
+        // A számozás a 'referenceitem' STÍLUSBAN van (numId=2), nem a
+        // bekezdésben — ezért nem elég a bekezdés numPr-jét törölni.
+        // A bekezdésre numId=0-t teszünk: ez felülírja a stílus számozását
+        // (Wordben "nincs lista"), így csak a beírt [n] marad.
+        setParaNoNumber(doc,p);
+      });
     }
   }
 
@@ -873,12 +1304,34 @@ $('#rep').addEventListener('click',()=>{
   L.push('Dátum: '+new Date().toLocaleString('hu-HU'));
   L.push('Alap: PPCI Author Guidelines, PPCI Sample File, PP Sample Reference List');
   L.push(''.padEnd(70,'='));
-  L.push(`Megfelel: ${RESULT.score.ok} · Figyelmeztetés: ${RESULT.score.warn} · Hiba: ${RESULT.score.err}`);
+  const isAutoR=c=>/korrektúrában javítva/i.test(c.d);
+  const probR=RESULT.checks.filter(c=>c.s==='err'||c.s==='warn');
+  const autoR=probR.filter(isAutoR);
+  const manR=probR.filter(c=>!isAutoR(c));
+  const okR=RESULT.checks.filter(c=>c.s==='ok');
+  L.push(`Kézi javítás kell: ${manR.length} · Korrektúrában javítva: ${autoR.length} · Megfelel: ${okR.length}`);
   L.push('');
-  RESULT.checks.forEach(c=>{
-    L.push(({ok:'[OK]  ',warn:'[FIGY]',err:'[HIBA]',info:'[INFO]'})[c.s]+' '+c.t);
-    L.push('       '+c.d); L.push('');
+
+  L.push('■ KÉZZEL ELVÉGZENDŐ (az alkalmazás nem javította)');
+  L.push(''.padEnd(70,'-'));
+  if(!manR.length) L.push('  (nincs ilyen)');
+  manR.forEach(c=>{ L.push('  ['+(c.s==='err'?'HIBA':'FIGY')+'] '+c.t); L.push('         '+c.d); L.push(''); });
+  L.push('');
+
+  L.push('■ KORREKTÚRÁBAN JAVÍTVA (a letöltött .docx-ben követett módosításként)');
+  L.push(''.padEnd(70,'-'));
+  if(!autoR.length) L.push('  (nincs ilyen)');
+  autoR.forEach(c=>{ L.push('  [JAVÍTVA] '+c.t); L.push('            '+c.d); L.push(''); });
+  L.push('');
+
+  L.push('■ MEGFELEL');
+  L.push(''.padEnd(70,'-'));
+  okR.forEach(c=>L.push('  [OK] '+c.t));
+  L.push('');
+  RESULT.checks.filter(c=>c.s==='info').forEach(c=>{
+    L.push('  [INFO] '+c.t); L.push('         '+c.d);
   });
+  L.push('');
   if(!RESULT.refs.inOrder){
     L.push('HIVATKOZÁS-ÚJRASZÁMOZÁS'); L.push(''.padEnd(70,'-'));
     RESULT.refs.map.forEach((nw,old)=>{ if(nw!==old) L.push(`  [${old}] -> [${nw}]`); });
@@ -916,20 +1369,55 @@ $('#rep').addEventListener('click',()=>{
 /* ---------- megjelenítés ---------- */
 function render(R){
   const o=$('#out'); o.classList.remove('hidden');
+
+  // Minden hibát/figyelmeztetést besorolunk: a korrektúra automatikusan
+  // javítja-e, vagy kézi beavatkozás kell. A jelzés szövege árulja el:
+  // ahol "A korrektúrában javítva" szerepel, azt az app elvégzi.
+  const isAuto=c=>/korrektúrában javítva/i.test(c.d);
+  const problems=R.checks.filter(c=>c.s==='err'||c.s==='warn');
+  const autoFixed=problems.filter(isAuto);
+  const manualNeeded=problems.filter(c=>!isAuto(c));
+  const passed=R.checks.filter(c=>c.s==='ok');
+  const infos=R.checks.filter(c=>c.s==='info');
+
   let h='';
   h+='<div class="scorecard">'
-   +cell('Megfelel',R.score.ok,'ok')
-   +cell('Figyelmeztetés',R.score.warn,R.score.warn?'warn':'ok')
-   +cell('Hiba',R.score.err,R.score.err?'err':'ok')
+   +cell('Korrektúrában javítva',autoFixed.length,autoFixed.length?'fix':'ok')
+   +cell('Kézi javítás kell',manualNeeded.length,manualNeeded.length?'err':'ok')
+   +cell('Megfelel',passed.length,'ok')
    +cell('Hivatkozás',R.refs.listCount,'')
-   +cell('Egyenlet',(R.math.ole+R.math.ole3+R.math.omml),R.math.ole3+R.math.omml?'warn':'ok')
    +'</div>';
 
-  h+='<h2>Ellenőrzési eredmények</h2>';
-  const ord=['err','warn','info','ok'];
-  ord.forEach(s=>R.checks.filter(c=>c.s===s).forEach(c=>{
-    h+=`<div class="item"><div class="dot ${c.s}"></div><div><div class="t">${c.t}</div><div class="d">${c.d}</div></div></div>`;
-  }));
+  if(manualNeeded.length){
+    h+='<div class="grouphead manual"><span class="badge err">Kézzel elvégzendő</span>'
+      +'Ezeket az alkalmazás nem javította — Önnek kell a kéziratban rendeznie.</div>';
+    manualNeeded.forEach(c=>{
+      h+=`<div class="item manual"><div class="dot ${c.s}"></div><div><div class="t">${c.t}</div><div class="d">${c.d}</div></div></div>`;
+    });
+  }
+
+  if(autoFixed.length){
+    h+='<div class="grouphead auto"><span class="badge fix">Korrektúrában javítva</span>'
+      +'Ezek a letöltött .docx-ben követett módosításként szerepelnek — csak jóvá kell hagynia őket.</div>';
+    autoFixed.forEach(c=>{
+      h+=`<div class="item auto"><div class="dot fix"></div><div><div class="t">${c.t}</div><div class="d">${c.d}</div></div></div>`;
+    });
+  }
+
+  if(passed.length){
+    h+='<div class="grouphead ok"><span class="badge ok">Megfelel</span>'+passed.length+' ellenőrzés rendben.</div>';
+    h+='<details class="passbox"><summary>Részletek megtekintése</summary>';
+    passed.forEach(c=>{
+      h+=`<div class="item"><div class="dot ok"></div><div><div class="t">${c.t}</div><div class="d">${c.d}</div></div></div>`;
+    });
+    h+='</details>';
+  }
+
+  if(infos.length){
+    infos.forEach(c=>{
+      h+=`<div class="item"><div class="dot info"></div><div><div class="t">${c.t}</div><div class="d">${c.d}</div></div></div>`;
+    });
+  }
 
   if(!R.refs.inOrder){
     h+='<h2>Hivatkozás-újraszámozási térkép</h2>';
