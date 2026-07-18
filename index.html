@@ -631,6 +631,28 @@ function compareRef(text,cr){
     if(pm && crp.length===2 && (pm[1]!==crp[0]||pm[2]!==crp[1]))
       d.push({f:'Oldalszám',ms:pm[1]+'–'+pm[2],cr:crp.join('–')});
   }
+  // Szerzőség — csak ha a DOI helyes (különben a cím-eltérés a fő gond).
+  // Két eset: "et al." rövidítés (tiltott), vagy eltérő/hibás vezetéknevek.
+  if(!wrongDoi && cr.authors){
+    const hasEtAl=/\bet al\b/i.test(text);
+    // a kéziratbeli vezetéknevek a cím (idézőjel) előtti részből
+    const qi=text.search(/[""„"']/);
+    const authorSeg=qi>-1?text.slice(0,qi):text;
+    const msFams=(authorSeg.match(/([A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+),/g)||[])
+      .map(s=>s.replace(',','').toLowerCase());
+    const crFams=cr.authors.split(',').map(s=>s.trim())
+      .filter((s,i,a)=>/^[A-Z]/.test(s) && (i===0||!/^[A-Z]\.$/.test(s)))
+      .map(s=>s.split(/\s|,/)[0].toLowerCase())
+      .filter(Boolean);
+    // egyszerű összevetés: a kézirat vezetéknevei részhalmaza-e a Crossrefének
+    const crSet=new Set(cr.authors.toLowerCase().match(/[a-zà-ÿ]+/g)||[]);
+    const mismatch=msFams.some(f=>!crSet.has(f));
+    if(hasEtAl || mismatch){
+      d.push({f:'Szerzők',
+        ms:(hasEtAl?'„et al." (hiányos)':'')+(mismatch?(hasEtAl?' + eltérő nevek':'eltérő nevek'):''),
+        cr:cr.authors, authorFix:true});
+    }
+  }
   d.wrongDoi=wrongDoi;
   return d;
 }
@@ -786,7 +808,11 @@ function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','
 function buildRef(d){
   let s=d.authors+' "'+d.title+'", '+d.journal;
   if(d.volume){ s+=', '+d.volume+(d.issue?'('+d.issue+')':''); }
-  if(d.page) s+=', pp. '+d.page.replace(/-/g,'–');
+  if(d.page){
+    const pg=d.page.replace(/-/g,'–');
+    // ha nincs kötőjel és rövid, az cikkazonosító (article number) -> nincs "pp."
+    s+= /–/.test(pg) ? ', pp. '+pg : ', '+pg;
+  }
   if(d.year) s+=', '+d.year+'.';
   return s;
 }
