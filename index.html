@@ -606,6 +606,36 @@ async function crossrefLookup(doi){
   }};
 }
 
+/* Szöveges keresés — ez a Crossref "Simple Text Query" motorja a REST API-n
+   keresztül (query.bibliographic). A TELJES hivatkozásszöveg alapján keresi
+   meg a valószínű DOI-t. Fordított irány, mint a crossrefLookup: ott DOI->adat,
+   itt szöveg->DOI. Hasznos a rossz vagy hiányzó DOI-s tételeknél.
+   FONTOS: fuzzy keresés, a legjobb egyezést adja — NEM garantáltan a pontos
+   cikk. Ezért mindig javaslat, jóváhagyással; a score-t is visszaadjuk. */
+async function crossrefByText(refText){
+  // a DOI-t és a záró URL-t levágjuk, hogy a szöveg tiszta bibliográfia legyen
+  const clean=refText.replace(/https?:\/\/\S+/g,'').replace(/\b10\.\d{4,9}\/\S+/g,'').trim();
+  const url='https://api.crossref.org/works?rows=1&select=DOI,title,author,container-title,volume,issue,page,issued,score&query.bibliographic='
+    +encodeURIComponent(clean);
+  let r;
+  try{ r=await fetch(url); }
+  catch(e){ return {status:'neterr',msg:e.message}; }
+  if(r.status===429) return {status:'ratelimit'};
+  if(!r.ok) return {status:'error',code:r.status};
+  let j; try{ j=await r.json(); }catch(e){ return {status:'error'}; }
+  const items=j&&j.message&&j.message.items;
+  if(!items||!items.length) return {status:'nomatch'};
+  const m=items[0];
+  return {status:'ok', doi:m.DOI||'', score:m.score||0, data:{
+    title:(m.title&&m.title[0])||'',
+    authors:crAuthors(m.author),
+    journal:(m['container-title']&&m['container-title'][0])||'',
+    volume:m.volume||'', issue:m.issue||'', page:m.page||'',
+    year:(((m.issued||{})['date-parts']||[[]])[0]||[])[0]||'',
+    type:m.type||''
+  }};
+}
+
 // A kéziratbeli tétel és a Crossref-adat összevetése
 function compareRef(text,cr){
   const d=[];
@@ -696,14 +726,23 @@ async function runCrossref(){
 
   for(const it of items){
     const doi=extractDOI(it.text);
-    if(!doi){ CROSSREF[it.n]={status:'nodoi'}; continue; }
     btn.textContent=`Lekérdezés… ${++done}/${items.length}`;
+
+    if(!doi){
+      // Nincs DOI -> szöveges kereséssel próbálunk DOI-t találni
+      let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr={status:'neterr',msg:e.message}; }
+      if(tr.status==='neterr'){ CROSSREF[it.n]={status:'neterr',msg:tr.msg}; halted=true; haltWhy=tr.msg||''; break; }
+      if(tr.status==='ok') CROSSREF[it.n]={status:'nodoi',textMatch:tr};
+      else CROSSREF[it.n]={status:'nodoi'};
+      await sleep(CR_DELAY);
+      continue;
+    }
+
     let r;
     try{ r=await crossrefLookup(doi); }
     catch(e){ r={status:'neterr',msg:e.message}; }
 
     if(r.status==='neterr'){
-      // Hálózati hiba: NEM állítjuk, hogy a DOI hibás. Leállunk.
       CROSSREF[it.n]={...r,doi};
       halted=true; haltWhy=r.msg||'';
       break;
@@ -712,10 +751,25 @@ async function runCrossref(){
       await sleep(2500);
       let r2; try{ r2=await crossrefLookup(doi); }catch(e){ r2={status:'neterr'}; }
       if(r2.status==='neterr'){ CROSSREF[it.n]={...r2,doi}; halted=true; break; }
-      CROSSREF[it.n]=r2.status==='ok'
-        ? {status:'ok',doi,data:r2.data,diff:compareRef(it.text,r2.data)} : {...r2,doi};
-    } else if(r.status==='ok'){
-      CROSSREF[it.n]={status:'ok',doi,data:r.data,diff:compareRef(it.text,r.data)};
+      r=r2;
+    }
+
+    if(r.status==='ok'){
+      const diff=compareRef(it.text,r.data);
+      const entry={status:'ok',doi,data:r.data,diff};
+      // Ha a DOI másik cikkre mutat, szöveges kereséssel megkeressük a HELYES DOI-t
+      if(diff.wrongDoi){
+        let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr=null; }
+        if(tr && tr.status==='ok' && tr.doi && tr.doi.toLowerCase()!==doi.toLowerCase())
+          entry.textMatch=tr;
+      }
+      CROSSREF[it.n]=entry;
+    } else if(r.status==='notfound'){
+      // A megadott DOI nem létezik -> szöveges kereséssel keresünk helyeset
+      let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr=null; }
+      CROSSREF[it.n]=(tr && tr.status==='ok')
+        ? {status:'notfound',doi,textMatch:tr}
+        : {status:'notfound',doi};
     } else CROSSREF[it.n]={...r,doi};
     await sleep(CR_DELAY);
   }
@@ -786,7 +840,7 @@ function renderCrossref(halted,haltWhy){
       if(wrong){
         h+=`<div class="danger-note"><strong>Tétel [${n}]:</strong> a kéziratban megadott DOI a Crossref szerint egy másik közleményhez tartozik.
           Ilyenkor <strong>nem a cím a hibás, hanem a DOI</strong> — a lenti „javasolt tétel" egy idegen cikk, azt beírni súlyos hiba lenne.
-          A helyes DOI-t a szerzőnek kell megadnia. Nyissa meg a linket az ellenőrzéshez.</div>`;
+          A helyes DOI-t a szerzőnek kell megadnia, vagy fogadja el a lenti szöveges keresés találatát, ha egyezik a tétellel.</div>`;
       }
       h+='<table class="reorder"><tr><th>Mező</th><th>Kéziratban</th><th>Crossref szerint</th></tr>';
       v.diff.forEach(d=>{h+=`<tr><td>${d.f}</td><td>${esc(d.ms)}</td><td class="chg">${esc(d.cr)}</td></tr>`});
@@ -794,13 +848,45 @@ function renderCrossref(halted,haltWhy){
       if(!wrong){
         h+=`<div class="crprop"><div class="k">Javasolt tétel:</div><div class="prop" data-prop="${n}">${esc(buildRef(v.data))}</div></div>`;
       } else {
-        h+=`<div class="crprop"><div class="k">A DOI-hoz tartozó közlemény (NEM javaslat):</div><div class="prop dim">${esc(buildRef(v.data))}</div></div>`;
+        h+=`<div class="crprop"><div class="k">A megadott DOI-hoz tartozó közlemény (NEM javaslat):</div><div class="prop dim">${esc(buildRef(v.data))}</div></div>`;
+        h+=textMatchBlock(n,v.textMatch,it_text(n));
       }
+      h+='</div>';
+    });
+  }
+
+  // Rossz-DOI / nem-található / nincs-DOI tételek szöveges keresési találatai
+  const withMatch=ent.filter(([,v])=>
+    (v.status==='notfound'||v.status==='nodoi') && v.textMatch);
+  if(withMatch.length){
+    h+='<h2>Szöveges keresés — lehetséges DOI</h2>';
+    h+='<div class="note">A Crossref „Simple Text Query" motorja a tétel teljes szövege alapján keresett DOI-t. '
+      +'<strong>Ez legjobb egyezés, nem biztos találat</strong> — vesse össze a tétellel, nyissa meg a linket, és csak akkor fogadja el, ha a cikk stimmel.</div>';
+    withMatch.forEach(([n,v])=>{
+      h+=`<div class="crcard"><div class="crhead">`;
+      h+=`<label><input type="checkbox" class="crpick" data-n="${n}"> Tétel [${n}] javítása a talált adatra</label>`;
+      h+=`<a href="https://doi.org/${v.textMatch.doi}" target="_blank" rel="noopener">${v.textMatch.doi} ↗</a></div>`;
+      h+='<table class="reorder"><tr><th></th><th>Tételben</th><th>Talált közlemény</th></tr>';
+      h+=`<tr><td>Szöveg</td><td>${esc(it_text(n).slice(0,80))}…</td><td class="chg">${esc(v.textMatch.data.title.slice(0,80))}…</td></tr></table>`;
+      h+=`<div class="crprop"><div class="k">Javasolt tétel (a talált DOI adatából):</div><div class="prop" data-prop="${n}">${esc(buildRef(v.textMatch.data))} https://doi.org/${v.textMatch.doi}</div></div>`;
       h+='</div>';
     });
   }
   box.innerHTML=h; box.classList.remove('hidden');
   box.scrollIntoView({behavior:'smooth'});
+}
+
+// segédek a textMatch megjelenítéshez
+function it_text(n){ const it=RESULT.refs.items.find(x=>x.n===+n); return it?it.text:''; }
+function textMatchBlock(n,tm,orig){
+  if(!tm) return '';
+  return `<div class="crprop" style="border-top:2px solid var(--steel)">`
+    +`<div class="k">Szöveges keresés talált egy MÁSIK DOI-t (lehetséges helyes):</div>`
+    +`<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0">`
+    +`<label style="font:600 13px/1.3 inherit;cursor:pointer;display:flex;gap:8px;align-items:center">`
+    +`<input type="checkbox" class="crpick" data-n="${n}" style="width:15px;height:15px"> Tétel [${n}] javítása erre</label>`
+    +`<a href="https://doi.org/${tm.doi}" target="_blank" rel="noopener" style="font:12px ui-monospace,Menlo,monospace;color:var(--steel)">${tm.doi} ↗</a></div>`
+    +`<div class="prop" data-prop="${n}">${esc(buildRef(tm.data))} https://doi.org/${tm.doi}</div></div>`;
 }
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 
