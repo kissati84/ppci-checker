@@ -699,6 +699,35 @@ function crAuthors(a){
 }
 function norm(s){return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
 
+/* Szövegbeli hivatkozás helyes szerző-előtagja a Crossref-adatból.
+   A PPCI/Guidelines gyakorlat (és a szerkesztő korrektúrája):
+   - 1 szerző:  "Family"
+   - 2 szerző:  "Family1 and Family2"
+   - 3+ szerző: "Family1 et al."
+   A Crossref authors stringből ("Family, C. D., Family2, C.") a
+   vezetékneveket vesszük (a vessző előtti rész minden tételnél). */
+function intextCite(crAuthorsStr){
+  if(!crAuthorsStr) return null;
+  // "Family, C. D., Family2, C." -> vezetéknevek
+  // a minta: Vezetéknév, Iniciálék(pontokkal), majd vessző a következő elé
+  const fams=[];
+  crAuthorsStr.split(/,\s*/).forEach((tok,idx,arr)=>{
+    // a vezetéknév az, amit NEM iniciálé (nem "X." vagy "X. Y." alak)
+    if(/^[A-ZÀ-ÿ][\wÀ-ÿ'’-]+/.test(tok) && !/^[A-Z]\.(\s|$)/.test(tok)) {
+      // kiskapitális/csupa nagybetű -> Title Case
+      let f=tok.trim();
+      if(/^[A-ZÀ-ÿ' -]+$/.test(f) && f.length>1){
+        f=f.charAt(0)+f.slice(1).toLowerCase();
+      }
+      fams.push(f);
+    }
+  });
+  if(!fams.length) return null;
+  if(fams.length===1) return fams[0];
+  if(fams.length===2) return fams[0]+' and '+fams[1];
+  return fams[0]+' et al.';
+}
+
 async function crossrefLookup(doi){
   // A DOI-t kódolni kell, DE a perjel útvonal-elválasztó a /works/<prefix>/<suffix>
   // útvonalban — encodeURIComponent azt %2F-re írná. Szegmensenként kódolunk.
@@ -1202,6 +1231,42 @@ function delTailText(doc,p,tail){
   }
 }
 
+// Egy bekezdésen belül kicseréli a `from` szöveget `to`-ra, követett módon.
+// Ha a `from` egyetlen runon belül van, azt a runt cseréljük. Ha átível
+// több runon, a teljes érintett run-sávot egy del+ins párra cseréljük.
+function replaceInParagraph(doc,p,from,to){
+  const runs=Array.from(p.getElementsByTagName('w:t'))
+    .map(t=>t.parentNode)
+    .filter(r=>r && r.nodeName==='w:r'
+      && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+  if(!runs.length) return false;
+  // futó szöveg + run-határok
+  let concat=''; const bounds=[];
+  runs.forEach(r=>{ const t=paraText(r); bounds.push([concat.length,concat.length+t.length,r]); concat+=t; });
+  const start=concat.indexOf(from);
+  if(start<0) return false;
+  const end=start+from.length;
+  // érintett runok
+  const affected=bounds.filter(([a,b])=>b>start && a<end);
+  if(!affected.length) return false;
+  const first=affected[0][2], firstStart=affected[0][0];
+  const last=affected[affected.length-1][2], lastEnd=affected[affected.length-1][1];
+  // a first run eleje (a from előtti rész) megmarad
+  const prefix=paraText(first).slice(0, start-firstStart);
+  // a last run vége (a from utáni rész) megmarad
+  const suffix=paraText(last).slice(paraText(last).length-(lastEnd-end));
+  const parent=first.parentNode;
+  const frag=doc.createDocumentFragment();
+  if(prefix) frag.appendChild(makeRun(doc,first,prefix,false));
+  frag.appendChild(wrapChange(doc,'w:del',makeRun(doc,first,from,true)));
+  frag.appendChild(wrapChange(doc,'w:ins',makeRun(doc,first,to,false)));
+  if(suffix) frag.appendChild(makeRun(doc,last,suffix,false));
+  parent.insertBefore(frag,first);
+  // az érintett eredeti runok eltávolítása
+  affected.forEach(([,,r])=>{ if(r.parentNode) r.parentNode.removeChild(r); });
+  return true;
+}
+
 function makeRun(doc,proto,text,isDel){
   const r=proto.cloneNode(true);
   // minden szövegelem eltávolítása a klónból
@@ -1434,8 +1499,57 @@ async function buildFixed(){
     delTailText(doc,paras[i],cut); edits++;
   }
 
-  /* A) Szövegtörzs — követett csere runonként */
+  /* A1) Szövegbeli szerző-hivatkozások javítása a Crossref-adatból.
+     A szerző gyakran csak egy vezetéknevet + "et al."-t ír a bevezetőben
+     ("MOVAHEDI RAD M et al. [13]"). A szerkesztő ezt a valódi szerzőségre
+     javítja ("Movahedi Rad and Ibrahim [13]"). A helyes alakot a hivatkozott
+     tétel Crossref-szerzőiből vezetjük le. Csak akkor cserélünk, ha:
+       - van megbízható Crossref-adat a tételhez, ÉS
+       - a szövegbeli név egyértelműen a tétel első szerzőjének felel meg. */
   const headRe0=/^(PPHeading|heading[1-9])$/;
+  if(CROSSREF && typeof CROSSREF==='object'){
+    for(let i=0;i<refStart;i++){
+      const st=paras[i].getElementsByTagName('w:pStyle')[0];
+      const v=st&&st.getAttribute('w:val');
+      if(v&&headRe0.test(v)) continue;
+      const whole=paraText(paras[i]);
+      if(!/\[\d+\]/.test(whole)) continue; // csak ahol van [n] hivatkozás
+      // minden "<Név ...> [n]" minta: a [n] előtti, nagybetűvel kezdődő névcsokor
+      const re=/([A-ZÀ-ÿ][\wÀ-ÿ'’.\- ]*?)(\s+et al\.?)?\s*\[(\d+)\]/g;
+      let m, replacements=[];
+      while((m=re.exec(whole))){
+        const n=+m[3];
+        const cr=CROSSREF[n];
+        if(!cr||cr.status!=='ok'||!cr.data||!cr.data.authors) continue;
+        const want=intextCite(cr.data.authors);
+        if(!want) continue;
+        // a szövegben lévő név vége (a [n] előtti szó(ak))
+        const seg=m[1].trimEnd();
+        // az utolsó 1-4 szó a névcsokor (a mondat eleji szavakat nem bántjuk)
+        const words=seg.split(/\s+/);
+        // a vezetéknév-jelöltek: nagybetűs/kiskapitális szavak a végén
+        let k=words.length;
+        while(k>0 && /^[A-ZÀ-ÿ][\wÀ-ÿ'’.\-]*$/.test(words[k-1])) k--;
+        const nameStart=k;
+        const nameWords=words.slice(nameStart);
+        if(!nameWords.length) continue;
+        const curName=(nameWords.join(' ')+(m[2]||'')).trim();
+        // csak ha a jelenlegi név ELTÉR a kívánttól, és az első szó egyezik
+        const wantFirst=norm(want.split(' ')[0]);
+        const curFirst=norm(nameWords[0]);
+        if(!wantFirst || wantFirst!==curFirst) continue; // más név -> nem bántjuk
+        const full=curName+' ['+n+']';
+        const fixed=want+' ['+n+']';
+        if(curName+' ['+n+']' !== fixed) replacements.push({from:full,to:fixed});
+      }
+      // a cseréket bekezdés-szinten alkalmazzuk (egyszer, az első előfordulásra)
+      replacements.forEach(rep=>{
+        replaceInParagraph(doc,paras[i],rep.from,rep.to) && edits++;
+      });
+    }
+  }
+
+  /* A) Szövegtörzs — követett csere runonként */
   for(let i=0;i<refStart;i++){
     if(i===kwIdx) continue; // külön kezeljük lent
     const st0=paras[i].getElementsByTagName('w:pStyle')[0];
