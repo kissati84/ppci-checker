@@ -47,6 +47,7 @@ button:disabled{opacity:.35;cursor:not-allowed}
 .v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.err{color:var(--err)}
 .v.fix{color:var(--steel)}
 .dot.fix{background:var(--steel)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .grouphead{margin:26px 0 4px;padding:9px 13px;border-radius:3px;font-size:13px;
   display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .grouphead.manual{background:#fbf0f0;border-left:3px solid var(--err)}
@@ -118,7 +119,8 @@ h2{font-size:13px;font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.1
 
 <div class="bar">
   <button id="run" disabled>Ellenőrzés futtatása</button>
-  <button id="cr" class="ghost" disabled>Crossref-ellenőrzés</button>
+  <button id="cr" class="ghost" disabled>Crossref-ellenőrzés újra</button>
+  <button id="eq" class="ghost" style="display:none">MathType egyenletek mentése</button>
   <button id="dl" class="ghost" disabled>Korrektúrázott .docx letöltése</button>
   <button id="rep" class="ghost" disabled>Jelentés letöltése</button>
 </div>
@@ -171,14 +173,103 @@ $('#run').addEventListener('click',async()=>{
     const doc=new DOMParser().parseFromString(xml,'application/xml');
     RESULT=analyze(doc,zip,xml);
     FIXED={zip,doc};
+    // A szorzásjel-vizsgálat async (az OLE .bin-eket olvassa) — az analyze után fut
+    await checkMultSign(zip,RESULT);
     render(RESULT);
     $('#dl').disabled=false; $('#rep').disabled=false; $('#cr').disabled=false;
+    // MathType-mentés gomb megjelenítése, ha van OLE egyenlet
+    $('#eq').style.display = (RESULT.math.oleFiles&&RESULT.math.oleFiles.length)?'inline-block':'none';
+    // A Crossref-ellenőrzés MAGÁTÓL elindul — nem kell külön rákattintani.
+    // Nem várjuk meg (await nélkül): a formai eredmény azonnal látszik,
+    // a lassú hálózati rész alatta töltődik be, amikor kész.
+    if(RESULT.refs.items && RESULT.refs.items.length){
+      autoRunCrossref();
+    }
   }catch(e){
     $('#out').classList.remove('hidden');
     $('#out').innerHTML='<h2>Hiba</h2><div class="item"><div class="dot err"></div><div><div class="t">A fájl nem dolgozható fel</div><div class="d">'+e.message+'</div></div></div>';
   }
   $('#run').disabled=false; $('#run').textContent='Ellenőrzés futtatása';
 });
+
+/* A MathType-egyenletek szorzásjelének konzisztencia-vizsgálata.
+   Az OLE .bin (compound file) nyers bájtjaiban keressük: × = 0xD7, · = 0xB7.
+   Ha a kéziratban keverednek (van, ahol ×, van, ahol ·), az formai hiba —
+   a Guidelines egységes jelölést vár. NEM tudjuk automatikusan javítani,
+   mert az OLE bináris szerkezetét a böngésző nem írja át biztonságosan,
+   de jelezzük, hogy a szerző egységesítse MathType-ban. */
+async function checkMultSign(zip,R){
+  const files=(R.math.oleFiles||[]);
+  if(!files.length) return;
+  const per=[];
+  for(const f of files){
+    try{
+      const buf=await zip.file(f).async('uint8array');
+      let times=0,cdot=0;
+      // az OLE header után a MathType MTEF-ben a szorzásjel bájtjai
+      for(let i=0;i<buf.length;i++){
+        if(buf[i]===0xD7) times++;
+        else if(buf[i]===0xB7) cdot++;
+      }
+      per.push({file:f.split('/').pop(),times,cdot});
+    }catch(e){/* olvashatatlan OLE - kihagyjuk */}
+  }
+  R.math.mult={per, anyTimes:per.some(p=>p.times>0), anyCdot:per.some(p=>p.cdot>0)};
+
+  const usesTimes=per.filter(p=>p.times>0);
+  const usesCdot=per.filter(p=>p.cdot>0);
+  if(usesTimes.length && usesCdot.length){
+    R.checks.push({s:'warn',t:'Az egyenletek szorzásjele nem egységes',
+      d:'A MathType-egyenletek keverik a szorzásjelet: van, amelyik „×" (kereszt), van, amelyik „·" (középpont). '
+        +'A Guidelines egységes jelölést vár. „×" jelet használó egyenletek: '+usesTimes.map(p=>p.file).join(', ')
+        +'; „·" jelet használók: '+usesCdot.map(p=>p.file).join(', ')+'. '
+        +'Egységesítse MathType-ban — érdemes a többségi jelet választani. '
+        +'Az egyenletek külön lementhetők a „MathType egyenletek mentése" gombbal.'});
+  } else if(usesTimes.length || usesCdot.length){
+    const sign=usesTimes.length?'× (kereszt)':'· (középpont)';
+    R.checks.push({s:'ok',t:'Az egyenletek szorzásjele egységes',d:'Minden szorzásjel: '+sign+'.'});
+  }
+}
+
+/* MathType-egyenletek mentése: az OLE .bin-eket kiírjuk külön fájlként.
+   A teljes oleObjectN.bin egy OLE compound file, amit a MathType közvetlenül
+   megnyit (átnevezve .bin-ként vagy MathType-ból importálva). */
+async function saveMathType(){
+  if(!ZIPFILE) return;
+  const zip=await JSZip.loadAsync(ZIPFILE);
+  const files=Object.keys(zip.files).filter(f=>/word\/embeddings\/oleObject\d+\.bin$/i.test(f)).sort();
+  if(!files.length) return;
+  if(files.length===1){
+    const buf=await zip.file(files[0]).async('blob');
+    dlBlob(buf, FNAME+'_egyenlet_1.bin');
+    return;
+  }
+  // több egyenlet -> zip csomag
+  const out=new JSZip();
+  let idx=1;
+  for(const f of files){
+    const data=await zip.file(f).async('uint8array');
+    out.file(FNAME+'_egyenlet_'+(idx++)+'.bin', data);
+  }
+  // README a MathType-megnyitáshoz
+  out.file('OLVASS_EL.txt',
+    'MathType-egyenletek a kéziratból\n\n'
+    +'Minden .bin fájl egy MathType (Equation.DSMT4) egyenlet, OLE compound formátumban.\n\n'
+    +'EPS-be mentés (a Guidelines EPS-t kér az egyenletekhez):\n'
+    +'  1. Nyisd meg a .bin fájlt MathType-ban (Insert > Object, vagy húzd be).\n'
+    +'  2. File > Save As > válaszd az "EPS" formátumot.\n'
+    +'  Az EPS-konverzió a MathType motorját igényli, ezért nem végezhető el\n'
+    +'  a böngészőben — de a .bin-ből egy lépésben előáll.\n\n'
+    +'Szorzásjel / szóköz egységesítése: az egyenletet MathType-ban megnyitva\n'
+    +'itt tudod a × / · jeleket és a felesleges szóközöket javítani, majd EPS-ként menteni.\n');
+  const blob=await out.generateAsync({type:'blob'});
+  dlBlob(blob, FNAME+'_MathType_egyenletek.zip');
+}
+function dlBlob(blob,name){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
 
 function analyze(doc,zip,xml){
   const paras=Array.from(doc.getElementsByTagName('w:p'));
@@ -309,7 +400,17 @@ function analyze(doc,zip,xml){
   const eqNums=(body.match(/\((\d{1,2})\)\s*$/gm)||[]).length;
   R.math.eqNums=eqNums;
 
-  if(ole>0) R.checks.push({s:'ok',t:`${ole} egyenlet MathType (Equation.DSMT4) objektumként`,d:'Megfelel a Guidelines követelményének. Az alkalmazás érintetlenül hagyja — az újracsomagolás nem bontja meg az OLE-t.'});
+  // A MathType OLE-fájlok listája (mentéshez) + szorzásjel-vizsgálat.
+  // A .bin OLE compound file; a szorzásjelet a nyers bájtokban keressük:
+  // × = 0xD7, · (középpont) = 0xB7. A kettő keveredése formai hiba.
+  R.math.oleFiles=[];
+  R.math.mult={times:0,cdot:0,files:[]};
+  if(zip){
+    const embNames=Object.keys(zip.files).filter(f=>/word\/embeddings\/oleObject\d+\.bin$/i.test(f));
+    R.math.oleFiles=embNames.sort();
+  }
+
+  if(ole>0) R.checks.push({s:'ok',t:`${ole} egyenlet MathType (Equation.DSMT4) objektumként`,d:'Megfelel a Guidelines követelményének. Az egyenletek külön lementhetők a „MathType egyenletek mentése" gombbal. Az alkalmazás érintetlenül hagyja őket — az újracsomagolás nem bontja meg az OLE-t.'});
   if(ole3>0) R.checks.push({s:'warn',t:`${ole3} egyenlet régi MS Equation 3.0 objektum`,d:'Ez nem MathType. MathType-ban meg kell nyitni és DSMT4-ként visszamenteni (MathType → Convert Equations).'});
   if(omml>0) R.checks.push({s:'warn',t:`${omml} natív Word-egyenlet (OMML)`,d:'A Guidelines MathType-ot vagy Equation Editort ír elő. Konverzió: MathType fül → Convert Equations → „Word 2007+" forrás → „MathType equations" cél. Ezt a Word/MathType végzi, böngészőben nem elvégezhető.'});
   if(ole+ole3+omml===0) R.checks.push({s:'err',t:'Nem található szerkeszthető egyenlet',d:'Ha a képletek képként (JPG/PNG/EMF) vannak beszúrva, azt a Guidelines kifejezetten tiltja: „never insert an equation as an image or a text".'});
@@ -454,6 +555,21 @@ function analyze(doc,zip,xml){
         +'Ezt kézzel kell beírni Wordben.'});
   }
 
+  // Címek Title Case-ben (a szerkesztő sentence case-re javítja, de a
+  // tulajdonnevek megkülönböztetése emberi döntés — ezért csak jelezzük).
+  const titleCaseHeads=heads.filter(h=>{
+    const words=h.t.replace(/^\d+(\.\d+)*\s*/,'').split(/\s+/).slice(1);
+    const capMid=words.filter(w=>/^[A-Z][a-z]{2,}/.test(w));
+    return capMid.length>=2;
+  });
+  if(titleCaseHeads.length){
+    R.checks.push({s:'warn',t:`${titleCaseHeads.length} szakaszcím Title Case-ben`,
+      d:'A Guidelines sentence case-t ír elő (csak az első szó és a tulajdonnevek nagybetűvel): '
+        +'pl. „Composition and Design of the Support System" helyett „…and design of the support system". '
+        +'Érintett: '+titleCaseHeads.slice(0,4).map(h=>'„'+h.t.slice(0,40)+'"').join(', ')
+        +(titleCaseHeads.length>4?' stb.':'')+'. Ezt kézzel javítsa — az automatikus kisbetűsítés elrontaná a tulajdonneveket (pl. „Hou Pantao Village").'});
+  }
+
   const chap=(textOnly.match(/\b(Chapter|Part)\s+\d/g)||[]).length;
   R.checks.push(chap===0
     ? {s:'ok',t:'Szakaszokra „Section" néven hivatkozik',d:'Nincs „Chapter"/„Part".'}
@@ -535,6 +651,18 @@ function analyze(doc,zip,xml){
     ? {s:'ok',t:'Nincs aláhúzott kiemelés',d:'A Guidelines dőlt betűt ír elő aláhúzás helyett.'}
     : {s:'warn',t:`${uline} aláhúzott szövegrész`,d:'Kiemelésre dőlt betűt kell használni. (Hiperlinkeknél normális.)'});
 
+  /* --- 12b. Tipográfia: dupla szóköz, szóköz írásjel előtt, zárójel-szóközök --- */
+  const typo=[];
+  const dbl=(textOnly.match(/\S {2,}\S/g)||[]).length;
+  const spBefore=(textOnly.match(/ [,;:](?!\d)/g)||[]).length + (textOnly.match(/\S +\./g)||[]).length;
+  const parenSp=(textOnly.match(/\( /g)||[]).length + (textOnly.match(/ \)/g)||[]).length;
+  if(dbl) typo.push(dbl+' dupla szóköz');
+  if(spBefore) typo.push(spBefore+' szóköz írásjel előtt');
+  if(parenSp) typo.push(parenSp+' felesleges szóköz zárójelnél');
+  R.checks.push(typo.length===0
+    ? {s:'ok',t:'Nincs tipográfiai szóközhiba',d:'Nincs dupla szóköz vagy rossz írásjel-szóköz.'}
+    : {s:'warn',t:'Tipográfiai szóközhibák',d:typo.join(', ')+'. A korrektúrában javítva.'});
+
   R.score={
     err:R.checks.filter(c=>c.s==='err').length,
     warn:R.checks.filter(c=>c.s==='warn').length,
@@ -596,12 +724,19 @@ async function crossrefLookup(doi){
   catch(e){ return {status:'error',code:'parse'}; }
   const m=j&&j.message;
   if(!m) return {status:'error',code:'nomsg'};
+  // Több dátummező is lehet: issued (legkorábbi, gyakran az online first éve),
+  // published-print (kötetszám éve), published-online. A kettő eltérhet
+  // (online first vs. lapszám). Mindet begyűjtjük, hogy ne jelezzünk hamis
+  // év-eltérést, ha a kézirat bármelyikkel egyezik.
+  const yOf=k=>{ const dp=m[k]&&m[k]['date-parts']&&m[k]['date-parts'][0]; return dp&&dp[0]; };
+  const years=[...new Set([yOf('published-print'),yOf('published-online'),yOf('issued')].filter(Boolean))];
   return {status:'ok',data:{
     title:(m.title&&m.title[0])||'',
     authors:crAuthors(m.author),
     journal:(m['container-title']&&m['container-title'][0])||'',
     volume:m.volume||'', issue:m.issue||'', page:m.page||'',
-    year:(((m.issued||{})['date-parts']||[[]])[0]||[])[0]||'',
+    year:(yOf('published-print')||yOf('issued')||yOf('published-online')||''),
+    years:years,
     type:m.type||''
   }};
 }
@@ -615,7 +750,8 @@ async function crossrefLookup(doi){
 async function crossrefByText(refText){
   // a DOI-t és a záró URL-t levágjuk, hogy a szöveg tiszta bibliográfia legyen
   const clean=refText.replace(/https?:\/\/\S+/g,'').replace(/\b10\.\d{4,9}\/\S+/g,'').trim();
-  const url='https://api.crossref.org/works?rows=1&select=DOI,title,author,container-title,volume,issue,page,issued,score&query.bibliographic='
+  // rows=3: több jelölt, mert a legjobb egyezés néha hiányos metaadatú
+  const url='https://api.crossref.org/works?rows=3&select=DOI,title,author,container-title,volume,issue,page,issued,published-print,published-online,score&query.bibliographic='
     +encodeURIComponent(clean);
   let r;
   try{ r=await fetch(url); }
@@ -626,14 +762,65 @@ async function crossrefByText(refText){
   const items=j&&j.message&&j.message.items;
   if(!items||!items.length) return {status:'nomatch'};
   const m=items[0];
-  return {status:'ok', doi:m.DOI||'', score:m.score||0, data:{
-    title:(m.title&&m.title[0])||'',
-    authors:crAuthors(m.author),
-    journal:(m['container-title']&&m['container-title'][0])||'',
-    volume:m.volume||'', issue:m.issue||'', page:m.page||'',
-    year:(((m.issued||{})['date-parts']||[[]])[0]||[])[0]||'',
-    type:m.type||''
-  }};
+  const toData=x=>{
+    const yOf=k=>{ const dp=x[k]&&x[k]['date-parts']&&x[k]['date-parts'][0]; return dp&&dp[0]; };
+    const years=[...new Set([yOf('published-print'),yOf('published-online'),yOf('issued')].filter(Boolean))];
+    return {
+      title:(x.title&&x.title[0])||'',
+      authors:crAuthors(x.author),
+      journal:(x['container-title']&&x['container-title'][0])||'',
+      volume:x.volume||'', issue:x.issue||'', page:x.page||'',
+      year:(yOf('published-print')||yOf('issued')||yOf('published-online')||''),
+      years:years, type:x.type||''
+    };
+  };
+  let data=toData(m);
+  // Ha a keresési találatból hiányzik oldalszám/évfolyam/év, a DOI TELJES
+  // lekérdezésével egészítjük ki (az adja a legteljesebb, hiteles rekordot).
+  if(m.DOI && (!data.page || !data.volume || !data.year)){
+    try{
+      const full=await crossrefLookup(m.DOI);
+      if(full.status==='ok'){
+        const fd=full.data;
+        data={
+          title:data.title||fd.title,
+          authors:data.authors||fd.authors,
+          journal:data.journal||fd.journal,
+          volume:data.volume||fd.volume,
+          issue:data.issue||fd.issue,
+          page:data.page||fd.page,
+          year:data.year||fd.year,
+          years:(data.years&&data.years.length)?data.years:fd.years,
+          type:data.type||fd.type
+        };
+      }
+    }catch(e){/* a keresési adattal folytatjuk */}
+  }
+  return {status:'ok', doi:m.DOI||'', score:m.score||0, data};
+}
+
+/* A szöveges (fuzzy) keresés fals pozitívra hajlamos. Ezért a találatot
+   VERIFIKÁLJUK: a talált cím tényleges szó-átfedését nézzük a kéziratbeli
+   leírással. Csak akkor tekintjük megbízhatónak, ha a cím érdemben egyezik
+   ÉS a Crossref relevancia-score elég magas. Ez a Crossref saját "SBMV"
+   (search + validation) elvét követi. */
+function titleOverlap(refText,crTitle){
+  if(!crTitle) return 0;
+  const stop=new Set(['the','a','an','of','in','on','for','and','to','with','based','using','study','case','analysis','method','methods']);
+  const toks=s=>(s.toLowerCase().match(/[a-z]{3,}/g)||[]).filter(w=>!stop.has(w));
+  const ct=toks(crTitle);
+  if(!ct.length) return 0;
+  const rset=new Set(toks(refText));
+  const hit=ct.filter(w=>rset.has(w)).length;
+  return hit/ct.length; // a talált cím szavainak hányad része szerepel a leírásban
+}
+// megbízható-e a szöveges találat: erős címátfedés + értelmes score
+function textMatchReliable(tr,refText){
+  if(!tr || tr.status!=='ok' || !tr.data.title) return false;
+  const ov=titleOverlap(refText,tr.data.title);
+  if(ov>=0.75) return true;
+  if(ov>=0.55 && (tr.score||0)>=60) return true;
+  return false;
 }
 
 // A kéziratbeli tétel és a Crossref-adat összevetése
@@ -647,8 +834,15 @@ function compareRef(text,cr){
     wrongDoi=true;
     d.push({f:'Cím',ms:'(a kéziratban más cím szerepel)',cr:cr.title});
   }
-  if(cr.year && !new RegExp('\\b'+cr.year+'\\b').test(text))
-    d.push({f:'Év',ms:(text.match(/\b(19|20)\d{2}\b/g)||['—']).join('/'),cr:String(cr.year)});
+  // Az év eltérése csak akkor hiba, ha EGYIK Crossref-dátummal sem egyezik.
+  // Az online first és a lapszám éve eltérhet (pl. online 2024, kötet 2025),
+  // mindkettő helyes lehet — ilyenkor nem jelzünk eltérést.
+  const msYears=text.match(/\b(19|20)\d{2}\b/g)||[];
+  const crYears=(cr.years&&cr.years.length)?cr.years.map(String):(cr.year?[String(cr.year)]:[]);
+  if(crYears.length && msYears.length && !msYears.some(y=>crYears.includes(y))){
+    d.push({f:'Év',ms:msYears.join('/'),cr:crYears.join(' / ')
+      +(crYears.length>1?' (online first / lapszám)':'')});
+  }
   if(cr.journal && !t.includes(norm(cr.journal).slice(0,25)))
     d.push({f:'Folyóirat',ms:'(eltér vagy rövidítve)',cr:cr.journal});
   if(cr.volume){
@@ -729,12 +923,9 @@ async function runCrossref(){
     btn.textContent=`Lekérdezés… ${++done}/${items.length}`;
 
     if(!doi){
-      // Nincs DOI -> szöveges kereséssel próbálunk DOI-t találni
-      let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr={status:'neterr',msg:e.message}; }
-      if(tr.status==='neterr'){ CROSSREF[it.n]={status:'neterr',msg:tr.msg}; halted=true; haltWhy=tr.msg||''; break; }
-      if(tr.status==='ok') CROSSREF[it.n]={status:'nodoi',textMatch:tr};
-      else CROSSREF[it.n]={status:'nodoi'};
-      await sleep(CR_DELAY);
+      // Nincs DOI (jellemzően könyv/szabvány): NEM keresünk szöveg alapján,
+      // csak jelezzük. A szöveges keresés fuzzy, könyvekre gyakran téved.
+      CROSSREF[it.n]={status:'nodoi'};
       continue;
     }
 
@@ -757,17 +948,22 @@ async function runCrossref(){
     if(r.status==='ok'){
       const diff=compareRef(it.text,r.data);
       const entry={status:'ok',doi,data:r.data,diff};
-      // Ha a DOI másik cikkre mutat, szöveges kereséssel megkeressük a HELYES DOI-t
-      if(diff.wrongDoi){
-        let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr=null; }
-        if(tr && tr.status==='ok' && tr.doi && tr.doi.toLowerCase()!==doi.toLowerCase())
-          entry.textMatch=tr;
+      // KETTŐS ELLENŐRZÉS: a leírás alapján is keresünk, és a talált DOI-t
+      // összevetjük a beírttal. Csak megbízható (verifikált) találatot veszünk.
+      let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr=null; }
+      if(textMatchReliable(tr,it.text)){
+        entry.textDoi=tr.doi;
+        if(tr.doi.toLowerCase()!==doi.toLowerCase()){
+          // a leírás egy MÁSIK cikkre illik, mint a beírt DOI
+          entry.doiMismatch={found:tr.doi,data:tr.data};
+          if(diff.wrongDoi) entry.textMatch=tr; // rossz DOI-nál javaslat is
+        }
       }
       CROSSREF[it.n]=entry;
     } else if(r.status==='notfound'){
       // A megadott DOI nem létezik -> szöveges kereséssel keresünk helyeset
       let tr; try{ tr=await crossrefByText(it.text); }catch(e){ tr=null; }
-      CROSSREF[it.n]=(tr && tr.status==='ok')
+      CROSSREF[it.n]=textMatchReliable(tr,it.text)
         ? {status:'notfound',doi,textMatch:tr}
         : {status:'notfound',doi};
     } else CROSSREF[it.n]={...r,doi};
@@ -810,19 +1006,34 @@ function renderCrossref(halted,haltWhy){
   const minor=diffs.filter(([,v])=>!v.diff.wrongDoi);
   const nf=ent.filter(([,v])=>v.status==='notfound');
   const nod=ent.filter(([,v])=>v.status==='nodoi');
+  // Kettős ellenőrzés: a DOI szerint rendben, de a leírásra MÁS DOI illik.
+  // (A rossz-DOI eseteket kizárjuk, azok külön kategóriában vannak.)
+  const dm=ent.filter(([,v])=>v.status==='ok'&&v.doiMismatch&&!v.diff.wrongDoi);
+  // Kettős ellenőrzés megerősítés: a leírás alapján talált DOI = a beírt DOI
+  const confirmed=ent.filter(([,v])=>v.status==='ok'&&v.textDoi&&!v.doiMismatch).length;
 
   h+='<div class="scorecard">'
    +cell('Egyezik',okAll,'ok')
    +cell('Rossz DOI',wrongs.length,wrongs.length?'err':'ok')
    +cell('Adateltérés',minor.length,minor.length?'warn':'ok')
+   +cell('DOI eltér a leírástól',dm.length,dm.length?'warn':'ok')
    +cell('Nem található',nf.length,nf.length?'warn':'ok')
    +cell('Nincs DOI',nod.length,'')
    +'</div>';
 
+  if(confirmed) h+=`<div class="item"><div class="dot ok"></div><div><div class="t">${confirmed} tétel kettős ellenőrzéssel megerősítve</div><div class="d">Ezeknél a beírt DOI és a leírás alapján talált DOI is ugyanarra a cikkre mutat — a hivatkozás nagy biztonsággal helyes.</div></div></div>`;
+
+  if(dm.length) h+=`<div class="item"><div class="dot warn"></div><div><div class="t">${dm.length} tételnél a DOI eltér a leírás alapján találttól</div><div class="d">Tétel: ${dm.map(([n])=>'['+n+']').join(', ')} — a beírt DOI önmagában érvényes cikkre mutat, de a hivatkozás szövegére a Crossref egy MÁSIK DOI-t talál. Ez lehet ártalmatlan (ugyanannak a cikknek több DOI-verziója, pl. előzetes és végleges), de lehet elgépelt DOI is. Érdemes ellenőrizni mindkét linket. Részletek lent.</div></div></div>`;
+
   if(wrongs.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${wrongs.length} tétel DOI-ja másik közleményre mutat</div><div class="d">Tétel: ${wrongs.map(([n])=>'['+n+']').join(', ')} — a megadott DOI létezik, de nem ahhoz a cikkhez tartozik, amit a tétel megnevez. Ez a leggyakoribb súlyos hivatkozási hiba. A szerzőnek kell tisztáznia; automatikusan nem javítható.</div></div></div>`;
 
-  if(nf.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${nf.length} DOI nem található a Crossrefben</div><div class="d">Tétel: ${nf.map(([n])=>'['+n+']').join(', ')} — a Crossref válaszolt, de ezeket a DOI-kat nem ismeri. Nyissa meg a doi.org linket: ha az sem működik, a DOI nem létezik. Sok ilyen tétel esetén érdemes a hivatkozott műveket tételesen visszakérni a szerzőtől, mert előfordul, hogy nem csak a DOI hibás, hanem a hivatkozott közlemény sem található.</div></div></div>`;
-  if(nod.length) h+=`<div class="item"><div class="dot info"></div><div><div class="t">${nod.length} tételnek nincs DOI-ja</div><div class="d">Tétel: ${nod.map(([n])=>'['+n+']').join(', ')} — jellemzően könyv vagy szabvány. Kézi ellenőrzés szükséges (ISBN).</div></div></div>`;
+  if(nf.length){
+    const unident=nf.filter(([,v])=>!v.textMatch);
+    const withhint=nf.filter(([,v])=>v.textMatch);
+    if(withhint.length) h+=`<div class="item"><div class="dot warn"></div><div><div class="t">${withhint.length} DOI nem található, de a leírás alapján van javaslat</div><div class="d">Tétel: ${withhint.map(([n])=>'['+n+']').join(', ')} — a megadott DOI-t a Crossref nem ismeri, de a hivatkozás szövegére talált egy lehetséges helyeset. Lásd lent a „Szöveges keresés" javaslatot.</div></div></div>`;
+    if(unident.length) h+=`<div class="item"><div class="dot err"></div><div><div class="t">${unident.length} hivatkozás nem azonosítható</div><div class="d">Tétel: ${unident.map(([n])=>'['+n+']').join(', ')} — sem a megadott DOI nem létezik, sem a leírás alapján nem található a mű a Crossrefben. A korrektúrába bekerül a megjegyzés: „[Reference can not be identified, please clarify.]”. A szerzőnek kell tisztáznia a hivatkozást.</div></div></div>`;
+  }
+  if(nod.length) h+=`<div class="item"><div class="dot info"></div><div><div class="t">${nod.length} tételnek nincs DOI-ja</div><div class="d">Tétel: ${nod.map(([n])=>'['+n+']').join(', ')} — jellemzően könyv vagy szabvány, amelyhez nem tartozik DOI. Ezekre nem keresünk DOI-t; a helyességet kézzel, az ISBN alapján kell ellenőrizni.</div></div></div>`;
 
   if(diffs.length){
     h+='<div class="note">Az alábbi eltéréseket a Crossref regisztrációs adata alapján találtuk. '
@@ -846,7 +1057,7 @@ function renderCrossref(halted,haltWhy){
       v.diff.forEach(d=>{h+=`<tr><td>${d.f}</td><td>${esc(d.ms)}</td><td class="chg">${esc(d.cr)}</td></tr>`});
       h+='</table>';
       if(!wrong){
-        h+=`<div class="crprop"><div class="k">Javasolt tétel:</div><div class="prop" data-prop="${n}">${esc(buildRef(v.data))}</div></div>`;
+        h+=proposalBlock(n,v.data);
       } else {
         h+=`<div class="crprop"><div class="k">A megadott DOI-hoz tartozó közlemény (NEM javaslat):</div><div class="prop dim">${esc(buildRef(v.data))}</div></div>`;
         h+=textMatchBlock(n,v.textMatch,it_text(n));
@@ -855,9 +1066,27 @@ function renderCrossref(halted,haltWhy){
     });
   }
 
-  // Rossz-DOI / nem-található / nincs-DOI tételek szöveges keresési találatai
-  const withMatch=ent.filter(([,v])=>
-    (v.status==='notfound'||v.status==='nodoi') && v.textMatch);
+  // Kettős ellenőrzés eltérései: beírt DOI vs. leírásra talált DOI
+  if(dm.length){
+    h+='<h2>DOI eltér a leírás alapján találttól</h2>';
+    h+='<div class="note">Ezeknél a beírt DOI érvényes cikkre mutat, de a hivatkozás szövegére a Crossref egy másik DOI-t talált. '
+      +'Nyissa meg mindkét linket: ha ugyanaz a cikk (pl. előzetes és végleges verzió), a beírt DOI jó. Ha más, a beírt DOI gyanús.</div>';
+    dm.forEach(([n,v])=>{
+      h+=`<div class="crcard"><div class="crhead">`;
+      h+=`<span style="font:600 13px/1.3 inherit">Tétel [${n}]</span>`;
+      h+=`<span style="font:12px ui-monospace,Menlo,monospace">`
+        +`<a href="https://doi.org/${v.doi}" target="_blank" rel="noopener">beírt: ${v.doi} ↗</a>`
+        +` &nbsp;|&nbsp; `
+        +`<a href="https://doi.org/${v.doiMismatch.found}" target="_blank" rel="noopener">talált: ${v.doiMismatch.found} ↗</a></span></div>`;
+      h+='<table class="reorder"><tr><th></th><th>Beírt DOI cikke</th><th>Leírásra talált cikk</th></tr>';
+      h+=`<tr><td>Cím</td><td>${esc(v.data.title.slice(0,70))}…</td><td>${esc(v.doiMismatch.data.title.slice(0,70))}…</td></tr></table>`;
+      h+='</div>';
+    });
+  }
+
+  // Nem-található DOI-s tételek szöveges keresési találatai
+  // (a DOI nélküli tételekre szándékosan NEM keresünk).
+  const withMatch=ent.filter(([,v])=>v.status==='notfound' && v.textMatch);
   if(withMatch.length){
     h+='<h2>Szöveges keresés — lehetséges DOI</h2>';
     h+='<div class="note">A Crossref „Simple Text Query" motorja a tétel teljes szövege alapján keresett DOI-t. '
@@ -868,7 +1097,8 @@ function renderCrossref(halted,haltWhy){
       h+=`<a href="https://doi.org/${v.textMatch.doi}" target="_blank" rel="noopener">${v.textMatch.doi} ↗</a></div>`;
       h+='<table class="reorder"><tr><th></th><th>Tételben</th><th>Talált közlemény</th></tr>';
       h+=`<tr><td>Szöveg</td><td>${esc(it_text(n).slice(0,80))}…</td><td class="chg">${esc(v.textMatch.data.title.slice(0,80))}…</td></tr></table>`;
-      h+=`<div class="crprop"><div class="k">Javasolt tétel (a talált DOI adatából):</div><div class="prop" data-prop="${n}">${esc(buildRef(v.textMatch.data))} https://doi.org/${v.textMatch.doi}</div></div>`;
+      const tmData={...v.textMatch.data,__doi:v.textMatch.doi};
+      h+=proposalBlock(n,tmData,'(a talált DOI adatából)');
       h+='</div>';
     });
   }
@@ -880,15 +1110,34 @@ function renderCrossref(halted,haltWhy){
 function it_text(n){ const it=RESULT.refs.items.find(x=>x.n===+n); return it?it.text:''; }
 function textMatchBlock(n,tm,orig){
   if(!tm) return '';
-  return `<div class="crprop" style="border-top:2px solid var(--steel)">`
+  const miss=missingFields(tm.data);
+  let h=`<div class="crprop" style="border-top:2px solid var(--steel)">`
     +`<div class="k">Szöveges keresés talált egy MÁSIK DOI-t (lehetséges helyes):</div>`
     +`<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0">`
     +`<label style="font:600 13px/1.3 inherit;cursor:pointer;display:flex;gap:8px;align-items:center">`
     +`<input type="checkbox" class="crpick" data-n="${n}" style="width:15px;height:15px"> Tétel [${n}] javítása erre</label>`
     +`<a href="https://doi.org/${tm.doi}" target="_blank" rel="noopener" style="font:12px ui-monospace,Menlo,monospace;color:var(--steel)">${tm.doi} ↗</a></div>`
-    +`<div class="prop" data-prop="${n}">${esc(buildRef(tm.data))} https://doi.org/${tm.doi}</div></div>`;
+    +`<div class="prop" data-prop="${n}">${esc(buildRef(tm.data))} https://doi.org/${tm.doi}</div>`;
+  if(miss.length){
+    h+=`<div style="font-size:12px;color:var(--warn);margin-top:5px">⚠ Hiányzik: `
+      +miss.join(', ')+`. Kézzel pótolja elfogadás előtt.</div>`;
+  }
+  return h+'</div>';
 }
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+// Javaslat-blokk a hiányzó mezők figyelmeztetésével
+function proposalBlock(n,data,extra){
+  const miss=missingFields(data);
+  let h=`<div class="crprop"><div class="k">Javasolt tétel${extra?' '+extra:''}:</div>`;
+  h+=`<div class="prop" data-prop="${n}">${esc(buildRef(data))}${data.__doi?' https://doi.org/'+data.__doi:''}</div>`;
+  if(miss.length){
+    h+=`<div style="font-size:12px;color:var(--warn);margin-top:5px">⚠ A Crossref-rekordból hiányzik: `
+      +miss.join(', ')+`. Ezt kézzel pótolja a tételbe, mielőtt elfogadja — a javaslat e nélkül hiányos.</div>`;
+  }
+  h+='</div>';
+  return h;
+}
 
 // PP mintalista szerinti tételszöveg a Crossref-adatból
 function buildRef(d){
@@ -899,14 +1148,60 @@ function buildRef(d){
     // ha nincs kötőjel és rövid, az cikkazonosító (article number) -> nincs "pp."
     s+= /–/.test(pg) ? ', pp. '+pg : ', '+pg;
   }
-  if(d.year) s+=', '+d.year+'.';
-  return s;
+  if(d.year) s+=', '+d.year;
+  return s.replace(/\s*$/,'')+'.';
+}
+// mely mezők hiányoznak a Crossref-adatból (a szerkesztőt figyelmeztetjük)
+function missingFields(d){
+  const miss=[];
+  if(!d.authors) miss.push('szerzők');
+  if(!d.title) miss.push('cím');
+  if(!d.journal) miss.push('folyóirat');
+  if(!d.volume) miss.push('évfolyam');
+  if(!d.page) miss.push('oldalszám');
+  if(!d.year) miss.push('év');
+  return miss;
 }
 const AUTHOR='PPCI Kéziratellenőrző';
 let RID=9000;
 const STAMP=()=>new Date().toISOString().replace(/\.\d+Z$/,'Z');
 
-// Egy <w:r> run klónja adott szöveggel; del=true esetén w:delText
+// Egy bekezdés VÉGÉRŐL töröl egy adott szöveget (tail), követett törléssel.
+// Run-orientált: a runokat hátulról törli, a vágásponton lévő runt kettévágja
+// úgy, hogy a megtartott eleje egy ÚJ sima runba kerül (az eredeti formázással),
+// a törölt vége pedig w:del-be. Így a nyers szöveg elfogadáskor/elvetéskor
+// pontosan helyreáll.
+function delTailText(doc,p,tail){
+  const runs=Array.from(p.getElementsByTagName('w:t'))
+    .map(t=>t.parentNode)
+    .filter(r=>r && r.nodeName==='w:r'
+      && !/^w:(ins|del)$/.test(r.parentNode.nodeName));
+  let remaining=tail.length;
+  for(let k=runs.length-1;k>=0 && remaining>0;k--){
+    const r=runs[k];
+    const txt=paraText(r);
+    if(!txt) continue;
+    const p2=r.parentNode;
+    if(txt.length<=remaining){
+      // teljes run -> w:del
+      p2.insertBefore(wrapChange(doc,'w:del',makeRun(doc,r,txt,true)),r);
+      p2.removeChild(r);
+      remaining-=txt.length;
+    } else {
+      // részleges: keep marad, del törlődik
+      const keep=txt.slice(0,txt.length-remaining);
+      const del=txt.slice(txt.length-remaining);
+      // keep: új sima run (az eredeti formázással), a helyére
+      const keepRun=makeRun(doc,r,keep,false);
+      const delRun=wrapChange(doc,'w:del',makeRun(doc,r,del,true));
+      p2.insertBefore(keepRun,r);
+      p2.insertBefore(delRun,r);
+      p2.removeChild(r);
+      remaining=0;
+    }
+  }
+}
+
 function makeRun(doc,proto,text,isDel){
   const r=proto.cloneNode(true);
   // minden szövegelem eltávolítása a klónból
@@ -1052,6 +1347,28 @@ function applyRules(s,map,isRefList){
   out=out.replace(/\b(Chapter|Part)\s+(\d)/g,'Section $2');
   out=fixEqRefs(out);
   out=fixSpelling(out);
+  out=fixTypography(out);
+  // Teljes szélességű (kínai/japán) zárójelek és írásjelek -> normál ASCII.
+  // A szerkesztő ezeket következetesen cseréli (pl. "a）" -> "a)").
+  out=out.replace(/）/g,')').replace(/（/g,'(')
+         .replace(/，/g,', ').replace(/；/g,'; ').replace(/：/g,': ');
+  return out;
+}
+
+/* Tipográfiai javítások egy runon belül. A run-határokat átlépő hibákat
+   (pl. két run közé eső dupla szóköz) a bekezdés-szintű fixParaTypography
+   kezeli — itt csak a runon belülit, ami biztonságos. */
+function fixTypography(s){
+  let out=s;
+  // több szóköz -> egy (de a runon belül; a nem-törő szóközt békén hagyjuk)
+  out=out.replace(/ {2,}/g,' ');
+  // szóköz írásjel ELŐTT: " ," -> ","  " ." -> "."  " ;" -> ";"  " :" -> ":"
+  out=out.replace(/ +([,;:.!?])/g,'$1');
+  // nyitó zárójel UTÁN és záró zárójel ELŐTT felesleges szóköz
+  out=out.replace(/\( +/g,'(').replace(/ +\)/g,')');
+  // szóköz a % elé (SI: 5 % helyes, de "5 %"-nál marad; a "5%" -> "5%" változatlan)
+  // vessző UTÁN hiányzó szóköz: "a,b" -> "a, b" (csak betűk közt, nem számoknál)
+  out=out.replace(/([a-zA-Z]),([a-zA-Z])/g,'$1, $2');
   return out;
 }
 
@@ -1091,6 +1408,32 @@ async function buildFixed(){
     }
   }
 
+  /* A0) Affiliációs e-mail címek törlése.
+     A szerkesztő gyakorlata: a szerzői affiliációk sorából (az absztrakt
+     ELŐTT, számmal kezdődő intézmény-sorok) az e-mail címeket és a hozzájuk
+     tartozó "; ... (X.Y.)" részt törli. FONTOS: csak az affiliációs blokkra
+     szűkítünk — a levelező szerző e-mailje (jellemzően az absztrakt után,
+     "* Correspondence") maradhat. A törlést az első ";"-től (ami az e-mailt
+     bevezeti) a bekezdés végéig végezzük, követett törléssel. */
+  const absIdx=paras.findIndex(p=>/^\s*abstract\b/i.test(paraText(p)));
+  const affEnd=absIdx>0?absIdx:Math.min(10,paras.length);
+  for(let i=0;i<affEnd;i++){
+    const full=paraText(paras[i]);
+    if(!/@/.test(full)) continue;
+    // csak affiliációs sor: számmal kezdődik (pl. "1 Institute…")
+    if(!/^\s*\d+\s+[A-Z]/.test(full)) continue;
+    // a törlendő farok: az első ";" (vagy " ;") az e-mail előtt, a végéig.
+    // Megkeressük az utolsó olyan ";"-t VAGY szóközt, ami még az első @ ELŐTT van.
+    const at=full.indexOf('@');
+    if(at<0) continue;
+    // a törlés kezdete: az @ előtti utolsó ";" (az e-mail-blokkot bevezető)
+    let start=full.lastIndexOf(';',at);
+    if(start<0) continue; // nincs elválasztó ";" -> biztonságból nem törlünk
+    const cut=full.slice(start);
+    if(!cut.trim()) continue;
+    delTailText(doc,paras[i],cut); edits++;
+  }
+
   /* A) Szövegtörzs — követett csere runonként */
   const headRe0=/^(PPHeading|heading[1-9])$/;
   for(let i=0;i<refStart;i++){
@@ -1113,7 +1456,10 @@ async function buildFixed(){
     });
   }
 
-  /* A2) Kulcsszavak — pontosvessző helyett vessző, kisbetűs kezdés */
+  /* A2) Kulcsszavak — pontosvessző helyett vessző, kisbetűs kezdés.
+     A teljes bekezdést egy művelettel cseréljük: MINDEN eredeti run törlésbe
+     kerül, és egyetlen beszúrt run tartalmazza a javított szöveget. Így nincs
+     szöveg-duplázódás elvetéskor. */
   if(kwIdx>-1){
     const runs=Array.from(paras[kwIdx].getElementsByTagName('w:t'))
       .map(t=>t.parentNode)
@@ -1123,15 +1469,18 @@ async function buildFixed(){
       const whole=runs.map(r=>paraText(r)).join('');
       const fixed=fixKeywords(whole);
       if(fixed!==whole){
-        trackedReplaceRun(doc,runs[0],whole,fixed); edits++;
-        // a többi run tartalma a törlésbe kerül
-        runs.slice(1).forEach(r=>{
+        const anchor=runs[0];
+        const parent=anchor.parentNode;
+        // 1) beszúrt run a javított teljes szöveggel, az első run elé
+        parent.insertBefore(wrapChange(doc,'w:ins',makeRun(doc,anchor,fixed,false)),anchor);
+        // 2) MINDEN eredeti run törlésbe (a teljes eredeti szöveg egyszer)
+        runs.forEach(r=>{
           const txt=paraText(r);
-          if(!txt) return;
-          const p=r.parentNode;
-          p.insertBefore(wrapChange(doc,'w:del',makeRun(doc,r,txt,true)),r);
-          p.removeChild(r);
+          if(!txt){ if(r.parentNode) r.parentNode.removeChild(r); return; }
+          r.parentNode.insertBefore(wrapChange(doc,'w:del',makeRun(doc,r,txt,true)),r);
+          r.parentNode.removeChild(r);
         });
+        edits++;
       }
     }
   }
@@ -1351,9 +1700,30 @@ async function buildFixed(){
         setParaNoNumber(doc,p);
       });
     }
-  }
 
-  /* C) Kereszthivatkozás-mezők — csak ha vannak */
+    /* B3) Nem azonosítható hivatkozás jelzése.
+       Ha egy DOI-s tétel DOI-ja nem létezik (notfound) ÉS a szöveges keresés
+       sem ad megbízható találatot, a hivatkozás nem azonosítható. A szerkesztő
+       gyakorlatát követve megjegyzést fűzünk a tétel végére korrektúraként:
+       "[Reference can not be identified, please clarify.]". */
+    blocks.forEach(b=>{
+      const cr=(CROSSREF&&typeof CROSSREF==='object')?CROSSREF[b.n]:null;
+      if(!cr) return;
+      const unidentifiable = cr.status==='notfound' && !cr.textMatch;
+      if(!unidentifiable) return;
+      const p=paras[b.idx[0]];
+      // ne duplázzuk, ha már ott a megjegyzés
+      if(/Reference can not be identified/i.test(paraText(p))) return;
+      // proto-run a tétel meglévő runjából (megőrzi a betűformázást)
+      const proto=Array.from(p.getElementsByTagName('w:r'))
+        .find(r=>!/^w:(ins|del)$/.test(r.parentNode.nodeName));
+      if(!proto) return;
+      const note=' [Reference can not be identified, please clarify.]';
+      const insRun=makeRun(doc,proto,note,false);
+      const ins=wrapChange(doc,'w:ins',insRun);
+      p.appendChild(ins); edits++;
+    });
+  }
   let out=new XMLSerializer().serializeToString(doc);
   if(/instrText[^<]*REF /.test(out)){
     out=out.replace(/<w:fldChar[^>]*\/>/g,'')
@@ -1386,6 +1756,32 @@ async function buildFixed(){
     mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
 }
 let LASTEDITS=0;
+
+$('#eq').addEventListener('click',async()=>{
+  $('#eq').disabled=true; const orig=$('#eq').textContent; $('#eq').textContent='Mentés…';
+  try{ await saveMathType(); $('#eq').textContent='Kész'; }
+  catch(e){ $('#eq').textContent='Hiba: '+e.message; }
+  setTimeout(()=>{$('#eq').textContent=orig; $('#eq').disabled=false;},2500);
+});
+
+// A Crossref-ellenőrzés automatikus indítása az offline elemzés után.
+async function autoRunCrossref(){
+  const box=$('#crout');
+  box.classList.remove('hidden');
+  box.innerHTML='<h2>Crossref-ellenőrzés</h2>'
+    +'<div class="item"><div class="dot info" style="animation:pulse 1.2s ease-in-out infinite"></div>'
+    +'<div><div class="t">Hivatkozások ellenőrzése folyamatban…</div>'
+    +'<div class="d">A formai ellenőrzés fent már kész — a hivatkozások Crossref-ellenőrzése hálózati, ezért néhány másodpercig tart. '
+    +'Amint kész, itt megjelenik. (Kézzel is újraindítható a „Crossref-ellenőrzés" gombbal.)</div></div></div>';
+  $('#cr').disabled=true;
+  try{ await runCrossref(); }
+  catch(e){
+    box.innerHTML='<h2>Crossref-ellenőrzés</h2>'
+      +'<div class="item"><div class="dot err"></div><div><div class="t">A Crossref-ellenőrzés nem futott le</div>'
+      +'<div class="d">'+esc(e.message)+' — a formai ellenőrzés érvényes marad. Próbálja a „Crossref-ellenőrzés" gombbal.</div></div></div>';
+  }
+  $('#cr').disabled=false;
+}
 
 $('#cr').addEventListener('click',async()=>{
   $('#cr').disabled=true;
